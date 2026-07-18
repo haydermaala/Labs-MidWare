@@ -8,10 +8,13 @@
 //! Every layer treats input as untrusted and never panics on malformed data.
 #![forbid(unsafe_code)]
 
+pub mod assembly;
 pub mod framing;
 pub mod link;
 pub mod records;
+pub mod sim;
 
+pub use assembly::{Assembled, AssemblyError, MessageAssembler};
 pub use framing::{
     build_frame, checksum, parse_frame, Frame, FrameError, FrameType, ACK, CR, ENQ, EOT, ETB, ETX,
     LF, NAK, STX,
@@ -21,6 +24,7 @@ pub use records::{
     parse_message, parse_record, Delimiters, Field, Message, Record, RecordError, RecordKind,
     Repeat,
 };
+pub use sim::{encode_session, run as run_scenario, scan_session, Scenario, ScenarioRun};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
