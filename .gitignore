@@ -42,4 +42,8 @@ secrets/
 # --- Google Drive sync noise ---
 *.gdoc
 *.gsheet
-Icon?
+# NOTE: do not add a bare "Icon?" here — on case-insensitive macOS it also
+# matches legitimate files like icon.png / icon.icns. The Drive icon file is
+# "Icon\r"; match it precisely instead.
+Icon
+
