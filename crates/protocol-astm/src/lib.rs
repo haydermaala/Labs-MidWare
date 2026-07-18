@@ -9,11 +9,13 @@
 #![forbid(unsafe_code)]
 
 pub mod framing;
+pub mod link;
 
 pub use framing::{
     build_frame, checksum, parse_frame, Frame, FrameError, FrameType, ACK, CR, ENQ, EOT, ETB, ETX,
     LF, NAK, STX,
 };
+pub use link::{transition, LinkAction, LinkEvent, LinkReceiver, LinkState};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
