@@ -257,8 +257,12 @@ dependencies = [
 name = "gatewayd"
 version = "0.1.0"
 dependencies = [
+ "canonical-model",
+ "durable-queue",
  "gateway-api",
+ "protocol-astm",
  "serde_json",
+ "thiserror",
 ]
 
 [[package]]
