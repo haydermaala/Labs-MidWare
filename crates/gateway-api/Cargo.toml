@@ -1,6 +1,6 @@
 [package]
 name = "gateway-api"
-description = "Local authenticated gateway API surface (health, status)."
+description = "Local authenticated gateway API (loopback, bearer token): health, status, redacted metadata."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,8 @@ publish = false
 
 [dependencies]
 canonical-model.workspace = true
-serde.workspace = true
-
-[dev-dependencies]
+durable-queue.workspace = true
+serde = { workspace = true }
 serde_json.workspace = true
+thiserror.workspace = true
+tiny_http = "0.12"

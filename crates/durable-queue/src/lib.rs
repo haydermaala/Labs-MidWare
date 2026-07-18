@@ -16,7 +16,7 @@ mod store;
 
 pub use error::{Result, StoreError};
 pub use migrations::{current_version, latest_version, migrate_to, migrate_to_latest, Migration};
-pub use store::{Enqueue, RawMessageRecord, Store};
+pub use store::{Enqueue, RawMessageMeta, RawMessageRecord, Store};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");

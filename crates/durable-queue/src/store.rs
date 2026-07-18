@@ -38,6 +38,19 @@ pub struct RawMessageRecord {
     pub encryption: String,
 }
 
+/// Redaction-safe metadata for a raw message (no payload bytes).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RawMessageMeta {
+    /// Identity.
+    pub id: RawMessageId,
+    /// Transport it arrived over.
+    pub transport: String,
+    /// Receipt time (RFC 3339, UTC).
+    pub received_at: String,
+    /// Byte length of the (unshown) payload.
+    pub byte_len: i64,
+}
+
 /// Outcome of an outbox enqueue.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Enqueue {
@@ -169,6 +182,30 @@ impl Store {
             [cutoff_rfc3339],
         )?;
         Ok(n)
+    }
+
+    /// Return metadata for the most recent raw messages — **id, transport,
+    /// received_at, byte_len only, never the payload**. This is the default,
+    /// redaction-safe view for the local API/UI (raw bytes may contain PHI).
+    pub fn recent_raw_message_meta(&self, limit: usize) -> Result<Vec<RawMessageMeta>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, transport, received_at, byte_len FROM raw_messages
+             ORDER BY received_at DESC, id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            let id_str: String = r.get(0)?;
+            Ok(RawMessageMeta {
+                id: parse_raw_id(&id_str),
+                transport: r.get(1)?,
+                received_at: r.get(2)?,
+                byte_len: r.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
     }
 
     // --- normalized result sets (provenance linkage) --------------------------
