@@ -1,10 +1,17 @@
-//! Local authenticated gateway API surface (health, status).
+//! Local authenticated gateway API surface.
 //!
-//! Phase 1 scaffold: exposes a serializable health payload only. The HTTP/IPC
-//! transport and authentication are implemented in Phase 5 (see DEVELOPMENT_PLAN.md).
+//! Exposes read-only status and redaction-safe metadata to the technician UI over
+//! a **loopback**, **bearer-token-authenticated** HTTP endpoint. The request
+//! handling is a pure function ([`api::handle`]) independent of the socket, so it
+//! is fully testable without binding a port; [`api::serve`] is a thin `tiny_http`
+//! adapter. No PHI, payloads, or result values are ever returned.
 #![forbid(unsafe_code)]
 
 use serde::{Deserialize, Serialize};
+
+pub mod api;
+
+pub use api::{handle, serve, ApiConfig, ApiError, ApiRequest, ApiResponse};
 
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
