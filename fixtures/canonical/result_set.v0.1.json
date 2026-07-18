@@ -1,0 +1,42 @@
+{
+  "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3301",
+  "specimen": "3f2504e0-4f89-41d3-9a0c-0305e82c3302",
+  "results": [
+    {
+      "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3303",
+      "test": { "system": "vendor-sys", "code": "GLU", "text": "Glucose" },
+      "value": { "kind": "numeric", "value": "5.30", "unit": "mmol/L" },
+      "status": "final",
+      "flags": ["H"],
+      "reference_range": { "low": "3.9", "high": "5.6" },
+      "observed_at": "2026-07-18T10:15:00Z",
+      "provenance": {
+        "raw_message": "3f2504e0-4f89-41d3-9a0c-0305e82c3304",
+        "parser_version": "astm-engine/0.1.0",
+        "validation": "pending_review"
+      }
+    },
+    {
+      "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3305",
+      "test": { "system": "vendor-sys", "code": "HIVAB" },
+      "value": { "kind": "coded", "coded": { "system": "vendor-sys", "code": "NEG", "text": "Non-reactive" } },
+      "status": "final",
+      "provenance": {
+        "raw_message": "3f2504e0-4f89-41d3-9a0c-0305e82c3304",
+        "parser_version": "astm-engine/0.1.0",
+        "validation": "pending_review"
+      }
+    },
+    {
+      "id": "3f2504e0-4f89-41d3-9a0c-0305e82c3306",
+      "test": { "system": "vendor-sys", "code": "CULT" },
+      "value": { "kind": "absent", "reason": "below_detection_limit" },
+      "status": "preliminary",
+      "provenance": {
+        "raw_message": "3f2504e0-4f89-41d3-9a0c-0305e82c3304",
+        "parser_version": "astm-engine/0.1.0",
+        "validation": "pending_review"
+      }
+    }
+  ]
+}
