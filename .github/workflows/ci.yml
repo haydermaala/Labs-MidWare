@@ -74,11 +74,21 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
       - name: Install pinned toolchain
         run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/gateway-desktop/src-tauri
+      # tauri-build's generate_context! embeds frontendDist (../dist) at compile
+      # time, so the frontend must be built before `cargo check`.
+      - name: Build frontend (creates dist/ for tauri codegen)
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm -r build
       - name: Compile-check desktop shell
         working-directory: apps/gateway-desktop/src-tauri
         run: cargo check
