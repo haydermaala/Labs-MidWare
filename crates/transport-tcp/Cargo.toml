@@ -1,6 +1,6 @@
 [package]
 name = "transport-tcp"
-description = "TCP client/server transport adapter with bounded framing."
+description = "Passive TCP capture: listener + client, connection limits, peer allowlist, bounded."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
