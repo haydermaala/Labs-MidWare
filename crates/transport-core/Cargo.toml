@@ -1,6 +1,6 @@
 [package]
 name = "transport-core"
-description = "Transport adapter traits, bounded buffers, and passive-capture contract."
+description = "Passive-capture transport contract: bounded buffers, stats, backoff, capture loop."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,4 +8,9 @@ license.workspace = true
 publish = false
 
 [dependencies]
+canonical-model.workspace = true
+serde.workspace = true
+thiserror.workspace = true
 
+[dev-dependencies]
+serde_json.workspace = true
