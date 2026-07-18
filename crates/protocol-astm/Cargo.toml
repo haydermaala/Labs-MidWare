@@ -1,6 +1,6 @@
 [package]
 name = "protocol-astm"
-description = "ASTM E1381/E1394 link-layer state machine and record parser."
+description = "ASTM E1381/E1394: framing + checksum, link-layer state machine, record parsing."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 canonical-model.workspace = true
+thiserror.workspace = true
