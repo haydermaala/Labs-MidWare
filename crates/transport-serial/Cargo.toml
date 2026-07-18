@@ -1,6 +1,6 @@
 [package]
 name = "transport-serial"
-description = "RS-232 / USB virtual COM transport adapter (passive-capable)."
+description = "Passive serial/USB-VCP capture: typed config + capture-over-Read; OS backend feature-gated."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,11 @@ publish = false
 
 [dependencies]
 transport-core.workspace = true
+thiserror.workspace = true
+# Real OS serial backend. Off by default so default builds/CI need no system
+# libs (e.g. libudev on Linux); enabled for hardware validation (Phase 10).
+serialport = { version = "4", optional = true }
+
+[features]
+default = []
+serialport-backend = ["dep:serialport"]
