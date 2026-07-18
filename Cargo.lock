@@ -497,6 +497,7 @@ name = "protocol-astm"
 version = "0.1.0"
 dependencies = [
  "canonical-model",
+ "thiserror",
 ]
 
 [[package]]
