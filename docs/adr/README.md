@@ -13,3 +13,4 @@ Alternatives).
 | [0004](0004-aspnetcore-control-plane.md) | ASP.NET Core on .NET 10 LTS control plane | Accepted |
 | [0005](0005-sqlite-postgres.md) | SQLite at the edge, PostgreSQL centrally | Accepted |
 | [0006](0006-simulator-first.md) | Simulator-first development | Accepted |
+| [0007](0007-exact-decimal.md) | Exact decimals for clinical numeric values (rust_decimal) | Accepted |
