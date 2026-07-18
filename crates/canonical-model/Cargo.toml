@@ -9,3 +9,9 @@ publish = false
 
 [dependencies]
 serde.workspace = true
+rust_decimal.workspace = true
+uuid.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

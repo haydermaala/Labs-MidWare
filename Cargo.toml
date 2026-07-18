@@ -34,6 +34,12 @@ publish = false
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Exact decimal for clinical numeric values — serialized as strings (never float).
+rust_decimal = { version = "1", default-features = false, features = ["serde-str", "std"] }
+# Strongly typed entity identifiers.
+uuid = { version = "1", features = ["v4", "serde"] }
+# UTC timestamps with RFC 3339 serde support; no floating-point time.
+time = { version = "0.3", default-features = false, features = ["std", "serde-well-known", "macros"] }
 # Internal crates referenced by path for the workspace.
 canonical-model    = { path = "crates/canonical-model" }
 transport-core     = { path = "crates/transport-core" }
