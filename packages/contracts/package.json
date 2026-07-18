@@ -16,6 +16,10 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10"
   }
 }

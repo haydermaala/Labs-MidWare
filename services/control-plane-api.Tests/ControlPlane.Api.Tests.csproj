@@ -25,4 +25,11 @@
     <ProjectReference Include="..\control-plane-api\ControlPlane.Api.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Shared cross-language canonical fixture (synthetic). -->
+    <Content Include="..\..\fixtures\canonical\result_set.v0.1.json"
+             Link="fixtures\result_set.v0.1.json"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

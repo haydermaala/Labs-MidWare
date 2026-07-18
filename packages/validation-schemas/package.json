@@ -16,6 +16,12 @@
   "scripts": {
     "build": "tsc -b",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
     "clean": "rm -rf dist tsconfig.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@lab-connect/contracts": "workspace:*",
+    "ajv": "8.20.0",
+    "vitest": "4.1.10"
   }
 }
