@@ -1,6 +1,6 @@
 [package]
 name = "transport-file"
-description = "Watched-file transport adapter with path allowlists and quarantine."
+description = "Passive watched-file capture: stable-write detection, allowlist, quarantine, archive."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,5 @@ publish = false
 
 [dependencies]
 transport-core.workspace = true
+
+[dev-dependencies]
