@@ -1,6 +1,6 @@
 [package]
 name = "durable-queue"
-description = "Durable outbox, deduplication, and dead-letter handling."
+description = "Edge SQLite persistence: raw messages, outbox, acks, dedup, dead-letters, audit."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,10 @@ publish = false
 
 [dependencies]
 canonical-model.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+time.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
