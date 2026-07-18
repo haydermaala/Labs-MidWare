@@ -1,0 +1,15 @@
+[package]
+name = "simulator"
+description = "Analyzer simulator CLI. Emits synthetic scenarios only; never touches real devices or patient data."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "lab-simulator"
+path = "src/main.rs"
+
+[dependencies]
+protocol-astm.workspace = true

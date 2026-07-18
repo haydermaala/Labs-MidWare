@@ -1,0 +1,11 @@
+[package]
+name = "canonical-model"
+description = "Canonical laboratory data model and provenance identifiers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true

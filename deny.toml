@@ -1,0 +1,30 @@
+# cargo-deny configuration. Supply-chain gate for the Rust workspace.
+[advisories]
+version = 2
+yanked = "deny"
+
+[bans]
+multiple-versions = "warn"
+wildcards = "warn"
+
+[licenses]
+version = 2
+# Permissive licenses only for dependencies. Copyleft is rejected by omission.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "MPL-2.0",
+]
+confidence-threshold = 0.9
+# Our own crates are marked license = "UNLICENSED"; treat them as internal.
+private = { ignore = true }
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

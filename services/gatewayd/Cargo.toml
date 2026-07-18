@@ -1,0 +1,16 @@
+[package]
+name = "gatewayd"
+description = "Edge gateway daemon (Windows Service / macOS launchd). Communication process; not the UI."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "gatewayd"
+path = "src/main.rs"
+
+[dependencies]
+gateway-api.workspace = true
+serde_json.workspace = true

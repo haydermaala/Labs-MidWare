@@ -1,0 +1,11 @@
+[package]
+name = "transport-serial"
+description = "RS-232 / USB virtual COM transport adapter (passive-capable)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+transport-core.workspace = true

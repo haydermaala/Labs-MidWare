@@ -1,0 +1,84 @@
+name: CI
+
+# Build, lint, and test all three stacks. No deployment steps: this workflow
+# never touches external infrastructure. Deployment is gated separately and
+# requires explicit, resource-named authorization (see DEVELOPMENT_PLAN.md §9).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (from rust-toolchain.toml)
+        run: rustup show
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Format check
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  dotnet:
+    name: .NET
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Build
+        run: dotnet build LabConnect.slnx -c Release
+      - name: Test
+        run: dotnet test LabConnect.slnx -c Release --no-build
+
+  js:
+    name: TypeScript / JS
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - name: Install
+        run: pnpm install --frozen-lockfile
+      - name: Build (typecheck + bundle)
+        run: pnpm -r build
+
+  tauri-desktop:
+    name: Tauri desktop shell (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/gateway-desktop/src-tauri
+      - name: Compile-check desktop shell
+        working-directory: apps/gateway-desktop/src-tauri
+        run: cargo check

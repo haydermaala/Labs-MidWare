@@ -1,0 +1,29 @@
+# Tauri desktop shell — intentionally a SEPARATE Cargo project (not a member of
+# the root Rust workspace) per Tauri convention and to keep desktop build flags
+# isolated from the gateway/edge workspace.
+[workspace]
+
+[package]
+name = "gateway-desktop"
+version = "0.1.0"
+description = "lab-connect technician desktop shell"
+edition = "2021"
+rust-version = "1.97"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+name = "gateway_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# used by tauri's CLI on some platforms
+custom-protocol = ["tauri/custom-protocol"]

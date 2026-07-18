@@ -1,0 +1,15 @@
+[package]
+name = "gateway-api"
+description = "Local authenticated gateway API surface (health, status)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+canonical-model.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

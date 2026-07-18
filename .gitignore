@@ -1,0 +1,45 @@
+# --- Rust ---
+/target
+**/target
+Cargo.lock.orig
+# Keep the workspace Cargo.lock committed (application/service repo).
+
+# --- Node / TS ---
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.tsbuildinfo
+.vite/
+
+# --- .NET ---
+bin/
+obj/
+[Bb]in/
+[Oo]bj/
+*.user
+
+# --- Tauri ---
+apps/gateway-desktop/src-tauri/gen/
+
+# --- Env / secrets (never commit real values) ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+secrets/
+
+# --- OS / editor ---
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp
+
+# --- Google Drive sync noise ---
+*.gdoc
+*.gsheet
+Icon?

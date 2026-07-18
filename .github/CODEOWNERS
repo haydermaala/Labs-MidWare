@@ -1,0 +1,12 @@
+# Code ownership. Owner handle is OPEN — set by the project owner before the
+# repository is created. Until then this documents intended review boundaries.
+
+# Default owner
+# * @OPEN-owner
+
+# Safety-critical areas require the clinical/security owners (OPEN).
+# /crates/protocol-astm/   @OPEN-clinical-owner @OPEN-security-owner
+# /crates/protocol-hl7/    @OPEN-clinical-owner @OPEN-security-owner
+# /crates/mapping-engine/  @OPEN-clinical-owner
+# /docs/security/          @OPEN-security-owner
+# /docs/validation/        @OPEN-clinical-owner

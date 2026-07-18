@@ -1,0 +1,11 @@
+# Secret-scanning config for lab-connect. Runs in CI via the gitleaks action.
+title = "lab-connect gitleaks config"
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Scaffold placeholders and example env are not secrets."
+paths = [
+  '''\.env\.example$''',
+  '''fixtures/.*''',
+]

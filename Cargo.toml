@@ -1,0 +1,53 @@
+# Rust workspace for the lab-connect edge/gateway components.
+# Toolchain is pinned in rust-toolchain.toml. Phase 1 scaffold: crates compile
+# with minimal, clearly-marked stubs. Product logic arrives in later phases.
+[workspace]
+resolver = "2"
+members = [
+  "crates/canonical-model",
+  "crates/transport-core",
+  "crates/transport-serial",
+  "crates/transport-tcp",
+  "crates/transport-file",
+  "crates/protocol-astm",
+  "crates/protocol-hl7",
+  "crates/protocol-delimited",
+  "crates/driver-runtime",
+  "crates/mapping-engine",
+  "crates/durable-queue",
+  "crates/gateway-api",
+  "services/gatewayd",
+  "services/simulator",
+]
+# The Tauri desktop shell is a separate Cargo project (its own [workspace]).
+exclude = [
+  "apps/gateway-desktop/src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.97"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Internal crates referenced by path for the workspace.
+canonical-model    = { path = "crates/canonical-model" }
+transport-core     = { path = "crates/transport-core" }
+transport-serial   = { path = "crates/transport-serial" }
+transport-tcp      = { path = "crates/transport-tcp" }
+transport-file     = { path = "crates/transport-file" }
+protocol-astm      = { path = "crates/protocol-astm" }
+protocol-hl7       = { path = "crates/protocol-hl7" }
+protocol-delimited = { path = "crates/protocol-delimited" }
+driver-runtime     = { path = "crates/driver-runtime" }
+mapping-engine     = { path = "crates/mapping-engine" }
+durable-queue      = { path = "crates/durable-queue" }
+gateway-api        = { path = "crates/gateway-api" }
+
+[profile.release]
+overflow-checks = true   # safety-critical: keep integer overflow checks in release
+panic = "unwind"

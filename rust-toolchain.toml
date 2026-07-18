@@ -1,0 +1,5 @@
+# Pinned toolchain. Bump only via an ADR + CI matrix update.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+profile = "default"

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/services/" />
+  <Folder Name="/services/control-plane-api.Tests/">
+    <Project Path="services/control-plane-api.Tests/ControlPlane.Api.Tests.csproj" />
+  </Folder>
+  <Folder Name="/services/control-plane-api/">
+    <Project Path="services/control-plane-api/ControlPlane.Api.csproj" />
+  </Folder>
+</Solution>

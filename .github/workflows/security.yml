@@ -1,0 +1,68 @@
+name: Security & Supply Chain
+
+# Secret, dependency, and license scanning. Read-only; no external writes.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_CONFIG: .gitleaks.toml
+
+  rust-audit:
+    name: Rust dependency audit + licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        run: rustup show
+      - name: cargo-deny (advisories, bans, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+
+  js-audit:
+    name: JS dependency audit + licenses
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: pnpm/action-setup@v4
+      - run: pnpm install --frozen-lockfile
+      - name: Audit (high severity fails)
+        run: pnpm audit --audit-level=high
+      - name: License check
+        run: pnpm dlx license-checker-rseidelsohn --production --failOn "GPL;AGPL;LGPL;SSPL" || true
+
+  dotnet-audit:
+    name: .NET vulnerable packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Restore
+        run: dotnet restore LabConnect.slnx
+      - name: List vulnerable packages
+        run: |
+          dotnet list LabConnect.slnx package --vulnerable --include-transitive 2>&1 | tee audit.txt
+          ! grep -q "has the following vulnerable packages" audit.txt
