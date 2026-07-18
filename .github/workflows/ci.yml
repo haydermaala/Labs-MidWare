@@ -18,12 +18,13 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # PRs run Linux+macOS (cheap); Windows is added on main to save Actions minutes.
   rust:
     name: Rust (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -33,6 +34,21 @@ jobs:
         uses: Swatinem/rust-cache@v2
       - name: Format check
         run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace
+
+  # Windows is minute-expensive; run it on main pushes (and manual dispatch) only.
+  rust-windows:
+    name: Rust (windows-latest)
+    if: github.event_name != 'pull_request'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (from rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
@@ -67,8 +83,11 @@ jobs:
       - name: Test
         run: pnpm -r --if-present run test
 
+  # The Tauri desktop compile is the most minute-expensive job; run it on main
+  # pushes (and manual dispatch) only, not on every PR.
   tauri-desktop:
     name: Tauri desktop shell (${{ matrix.os }})
+    if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
