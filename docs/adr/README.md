@@ -14,3 +14,4 @@ Alternatives).
 | [0005](0005-sqlite-postgres.md) | SQLite at the edge, PostgreSQL centrally | Accepted |
 | [0006](0006-simulator-first.md) | Simulator-first development | Accepted |
 | [0007](0007-exact-decimal.md) | Exact decimals for clinical numeric values (rust_decimal) | Accepted |
+| [0008](0008-edge-sqlite-persistence.md) | Edge SQLite persistence (rusqlite bundled, reversible migrations) | Accepted |
