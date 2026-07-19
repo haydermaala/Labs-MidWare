@@ -27,7 +27,7 @@ Support is added incrementally with explicit tests. Current status:
 |---------|-----------|--------|
 | `ORU^R01` (observation result) | inbound (analyzer → gateway) | **parse only** (structural); mapping/release not yet |
 | `ORM^O01` / `OML^O21` (orders) | — | not yet |
-| `ACK` (`MSA`) | outbound/inbound | not yet (next increment) |
+| `ACK` (`MSA`) | outbound/inbound | **generate** (original mode: AA/AE/AR, routing swapped, control id echoed) |
 | `QBP`/`RSP` (queries) | — | not yet |
 
 ## Segments recognized by helpers
@@ -38,9 +38,11 @@ convenience accessors are being added for: `MSH`, `PID`, `PV1`, `ORC`, `OBR`,
 
 ## Transport
 
-- **MLLP** (start block `0x0B`, end block `0x1C 0x0D`) listener/client with size,
-  time, and connection limits — **next increment**.
-- ACK modes (original vs enhanced) — **next increment**.
+- **MLLP** (start block `0x0B`, end block `0x1C 0x0D`): framing + a streaming
+  decoder (buffers partial frames, bounds message size, never panics) are
+  implemented. TCP listener/client integration is the next increment.
+- ACK: **original mode** (`AA`/`AE`/`AR`) generation implemented. Enhanced-mode
+  acknowledgement is not yet implemented.
 
 ## Explicit limitations (v0.1)
 
