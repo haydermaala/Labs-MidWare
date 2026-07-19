@@ -118,6 +118,8 @@ pub struct Manifest {
     pub schema_version: String,
     /// Stable driver id (kebab-case slug).
     pub id: String,
+    /// Driver package version (semver-ish). Used for upgrade/rollback ordering.
+    pub version: String,
     /// Vendor name (may be an `OPEN` placeholder in drafts).
     pub vendor: String,
     /// Device models covered. A certified driver must not use the `*` wildcard.
@@ -189,6 +191,9 @@ impl Manifest {
                 self.minimum_runtime
             ));
         }
+        if !looks_like_version(&self.version) {
+            issues.push(format!("version '{}' is not a version", self.version));
+        }
 
         // A certified driver must be specific and signed.
         if self.status == DriverStatus::Certified {
@@ -233,6 +238,7 @@ mod tests {
         br#"{
           "schemaVersion": "0.1",
           "id": "generic-astm",
+          "version": "0.1.0",
           "vendor": "OPEN",
           "models": ["*"],
           "protocolFamily": "astm",
