@@ -68,6 +68,20 @@ app.MapPost("/api/tenants", (CreateTenantRequest body, IControlPlaneStore store,
 app.MapGet("/api/tenants", (IControlPlaneStore store, HttpRequest req) =>
     IsAdmin(req) ? Results.Json(store.Tenants()) : Results.Unauthorized());
 
+// Deactivate a tenant (soft): stops new enrollment; data and audit retained.
+app.MapPost("/api/tenants/{tenantId}/deactivate", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    return store.DeactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
+});
+
+// Reactivate a previously deactivated tenant.
+app.MapPost("/api/tenants/{tenantId}/reactivate", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    return store.ReactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
+});
+
 // Issue a short-lived, single-use bootstrap token an operator hands to a gateway.
 app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
 {
@@ -82,6 +96,14 @@ app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneSt
     if (!IsAdmin(req)) return Results.Unauthorized();
     if (!store.TenantExists(tenantId)) return Results.NotFound();
     return Results.Json(store.GatewaysFor(tenantId));
+});
+
+// Decommission a gateway within a tenant: mark inactive and revoke its credential.
+app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/decommission",
+    (string tenantId, string gatewayId, IControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    return store.DecommissionGateway(tenantId, gatewayId) ? Results.NoContent() : Results.NotFound();
 });
 
 // Publish a (non-production) config version for a tenant's gateway.

@@ -14,14 +14,16 @@ using System.Collections.Concurrent;
 
 namespace ControlPlane.Api;
 
-/// <summary>A tenant (customer/organization).</summary>
-public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt);
+/// <summary>A tenant (customer/organization). Inactive tenants are retained but
+/// cannot enroll new gateways.</summary>
+public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active);
 
 /// <summary>An enrolled gateway, scoped to a tenant.</summary>
-public sealed record Gateway(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt);
+public sealed record Gateway(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active);
 
-/// <summary>Public view of a gateway (no credential).</summary>
-public sealed record GatewayView(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt);
+/// <summary>Public view of a gateway (no credential). A decommissioned gateway has
+/// Active=false and its credential revoked.</summary>
+public sealed record GatewayView(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active);
 
 /// <summary>Result of enrolling: the gateway id and its (one-time shown) device credential.</summary>
 public sealed record EnrollmentResult(string GatewayId, string TenantId, string DeviceCredential);
@@ -51,7 +53,7 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
 
     public Tenant CreateTenant(string name)
     {
-        var tenant = new Tenant(Ids.New("ten"), name, _clock.GetUtcNow());
+        var tenant = new Tenant(Ids.New("ten"), name, _clock.GetUtcNow(), Active: true);
         _tenants[tenant.Id] = tenant;
         Audit("tenant.created", tenant.Id, tenant.Name);
         return tenant;
@@ -61,10 +63,47 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
 
     public bool TenantExists(string tenantId) => _tenants.ContainsKey(tenantId);
 
-    /// <summary>Issue a short-lived, single-use bootstrap token for a tenant.</summary>
+    private bool TenantIsActive(string tenantId) =>
+        _tenants.TryGetValue(tenantId, out var t) && t.Active;
+
+    public bool DeactivateTenant(string tenantId) => SetTenantActive(tenantId, active: false);
+
+    public bool ReactivateTenant(string tenantId) => SetTenantActive(tenantId, active: true);
+
+    private bool SetTenantActive(string tenantId, bool active)
+    {
+        if (!_tenants.TryGetValue(tenantId, out var tenant))
+        {
+            return false;
+        }
+        if (tenant.Active != active)
+        {
+            _tenants[tenantId] = tenant with { Active = active };
+            Audit(active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
+        }
+        return true;
+    }
+
+    public bool DecommissionGateway(string tenantId, string gatewayId)
+    {
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
+        {
+            return false;
+        }
+        if (gateway.Active)
+        {
+            _gateways[gatewayId] = gateway with { Active = false };
+            // Revoke the device credential so the gateway can no longer authenticate.
+            _deviceCredentials.TryRemove(gatewayId, out _);
+            Audit("gateway.decommissioned", tenantId, gatewayId);
+        }
+        return true;
+    }
+
+    /// <summary>Issue a short-lived, single-use bootstrap token for an active tenant.</summary>
     public BootstrapTokenView? IssueBootstrapToken(string tenantId, TimeSpan ttl)
     {
-        if (!TenantExists(tenantId))
+        if (!TenantIsActive(tenantId))
         {
             return null;
         }
@@ -88,6 +127,11 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         {
             return null;
         }
+        // A token issued before its tenant was deactivated must not still enroll.
+        if (!TenantIsActive(token.TenantId))
+        {
+            return null;
+        }
         // Mark used atomically; reject if someone else won the race.
         var consumed = token with { Used = true };
         if (!_bootstrap.TryUpdate(bootstrapToken, consumed, token))
@@ -95,7 +139,7 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             return null;
         }
 
-        var gateway = new Gateway(Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow());
+        var gateway = new Gateway(Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow(), Active: true);
         _gateways[gateway.Id] = gateway;
         var credential = Ids.NewSecret();
         _deviceCredentials[gateway.Id] = credential;
@@ -108,7 +152,7 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         _gateways.Values
             .Where(g => g.TenantId == tenantId)
             .OrderBy(g => g.EnrolledAt)
-            .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt))
+            .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active))
             .ToList();
 
     /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>

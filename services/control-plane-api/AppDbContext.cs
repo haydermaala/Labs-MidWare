@@ -72,6 +72,9 @@ public sealed class TenantEntity
     public string Id { get; set; } = "";
     public string Name { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>Inactive tenants are retained but cannot enroll new gateways.</summary>
+    public bool Active { get; set; } = true;
 }
 
 /// <summary>An enrolled gateway row, scoped to a tenant.</summary>
@@ -81,6 +84,9 @@ public sealed class GatewayEntity
     public string TenantId { get; set; } = "";
     public string Name { get; set; } = "";
     public DateTimeOffset EnrolledAt { get; set; }
+
+    /// <summary>A decommissioned gateway is inactive and its credential revoked.</summary>
+    public bool Active { get; set; } = true;
 }
 
 /// <summary>A gateway's rotated device credential.</summary>
