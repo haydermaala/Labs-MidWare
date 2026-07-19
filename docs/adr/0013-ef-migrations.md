@@ -26,11 +26,15 @@ schema changes that are versioned, reviewable, reversible, and traceable.
   calls `Database.Migrate()` on startup, so a single-replica staging deploy is always
   at the latest schema with no extra step. Tests and local dev use the in-memory
   store and never migrate.
-- **Baseline the pre-existing database.** The staging database was first created by
-  `EnsureCreated`, so it has the tables but no `__EFMigrationsHistory`. It is
-  **baselined** once — the `InitialCreate` id is recorded as already applied — so the
-  first `Migrate()` is a no-op instead of trying to recreate existing tables. This is
-  a one-time transition, not a recurring step.
+- **Baseline the pre-existing database in code.** The staging database was first
+  created by `EnsureCreated`, so it has the tables but no `__EFMigrationsHistory`.
+  `SchemaBootstrap.Apply` detects that exact legacy state (history table absent AND a
+  known table present) and **baselines** it — records the assembly's migrations as
+  already applied — before calling `Migrate()`, so the first deploy is a clean no-op
+  instead of trying to recreate existing tables. Baselining never drops or alters
+  data, and once any database has a history table the branch is a no-op, so it is
+  safe to keep. This runs over the app's own connection during startup (no
+  out-of-band DB surgery).
 
 ## Consequences
 
