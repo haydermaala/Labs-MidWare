@@ -17,3 +17,4 @@ Alternatives).
 | [0008](0008-edge-sqlite-persistence.md) | Edge SQLite persistence (rusqlite bundled, reversible migrations) | Accepted |
 | [0009](0009-passive-capture-transport.md) | Capture-only transport contract | Accepted |
 | [0010](0010-astm-engine-layering.md) | ASTM engine layering and never-panic/fuzz policy | Accepted |
+| [0011](0011-driver-signing.md) | Signed, data-first drivers with a verified install lifecycle | Accepted |

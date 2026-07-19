@@ -8,12 +8,14 @@
 #![forbid(unsafe_code)]
 
 pub mod manifest;
+pub mod registry;
 pub mod signing;
 
 pub use manifest::{
     Capabilities, DriverStatus, FirmwareRange, Manifest, ManifestError, ProtocolFamily, Signature,
     Transport, SUPPORTED_SCHEMA_VERSION,
 };
+pub use registry::{InstalledDriver, Registry, RegistryError, RegistryEvent};
 pub use signing::{compute_digest, sign, verify, RevocationList, TrustStore, VerifyError};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
