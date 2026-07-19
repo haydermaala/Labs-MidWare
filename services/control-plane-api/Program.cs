@@ -1,27 +1,75 @@
-// Control-plane API — Phase 1 scaffold.
-// Exposes liveness/readiness health endpoints only. No tenant, driver, mapping,
-// or clinical endpoints exist yet; those arrive in Phase 8 per DEVELOPMENT_PLAN.md.
-// Health payloads must never contain PHI, result values, or secrets.
+// Control-plane API.
+// Health + multi-tenant fleet management: tenants, secure gateway enrollment, and
+// tenant-scoped gateway inventory. Management endpoints require an admin bearer
+// token (from configuration); gateway enrollment authenticates with a single-use
+// bootstrap token. No PHI, result values, or secrets appear in any payload here.
+// PostgreSQL/EF Core and OIDC are wired in a later increment (in-memory for now).
 
 using System.Reflection;
+using ControlPlane.Api;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<ControlPlaneStore>();
 
 var app = builder.Build();
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
+var adminToken = app.Configuration["ControlPlane:AdminToken"];
 
-// Liveness: process is up.
+bool IsAdmin(HttpRequest req) =>
+    !string.IsNullOrEmpty(adminToken) &&
+    req.Headers.Authorization.ToString() == $"Bearer {adminToken}";
+
+// --- health ---------------------------------------------------------------
 app.MapGet("/health", () => Results.Json(new HealthResponse("ok", "control-plane-api", version)));
-
-// Readiness: dependencies (DB, etc.) are reachable. Phase 1 has no dependencies,
-// so readiness mirrors liveness until Phase 8 wires PostgreSQL and checks.
 app.MapGet("/health/ready", () => Results.Json(new HealthResponse("ready", "control-plane-api", version)));
+
+// --- tenant management (admin) --------------------------------------------
+app.MapPost("/api/tenants", (CreateTenantRequest body, ControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest(new { error = "name required" });
+    var tenant = store.CreateTenant(body.Name.Trim());
+    return Results.Created($"/api/tenants/{tenant.Id}", tenant);
+});
+
+app.MapGet("/api/tenants", (ControlPlaneStore store, HttpRequest req) =>
+    IsAdmin(req) ? Results.Json(store.Tenants()) : Results.Unauthorized());
+
+// Issue a short-lived, single-use bootstrap token an operator hands to a gateway.
+app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, ControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    var token = store.IssueBootstrapToken(tenantId, TimeSpan.FromMinutes(15));
+    return token is null ? Results.NotFound() : Results.Json(token);
+});
+
+// Tenant-scoped gateway inventory (never returns another tenant's gateways).
+app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, ControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!store.TenantExists(tenantId)) return Results.NotFound();
+    return Results.Json(store.GatewaysFor(tenantId));
+});
+
+// --- gateway enrollment (bootstrap token is the credential) ----------------
+app.MapPost("/api/gateways/enroll", (EnrollRequest body, ControlPlaneStore store) =>
+{
+    var result = store.Enroll(body.BootstrapToken, string.IsNullOrWhiteSpace(body.Name) ? "gateway" : body.Name.Trim());
+    return result is null ? Results.Unauthorized() : Results.Json(result);
+});
 
 app.Run();
 
 /// <summary>Minimal, PHI-free health payload.</summary>
 internal sealed record HealthResponse(string Status, string Service, string Version);
+
+/// <summary>Request to create a tenant.</summary>
+internal sealed record CreateTenantRequest(string Name);
+
+/// <summary>Request to enroll a gateway using a bootstrap token.</summary>
+internal sealed record EnrollRequest(string BootstrapToken, string? Name);
 
 // Exposed so integration tests can host the app via WebApplicationFactory.
 public partial class Program;
