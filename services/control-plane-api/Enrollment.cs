@@ -35,10 +35,19 @@ public sealed class ControlPlaneStore
     private readonly ConcurrentDictionary<string, Gateway> _gateways = new();
     private readonly ConcurrentDictionary<string, string> _deviceCredentials = new(); // gatewayId -> credential
     private readonly ConcurrentDictionary<string, BootstrapToken> _bootstrap = new();
+    private readonly ConcurrentDictionary<string, ConfigRecord> _configs = new(); // gatewayId -> config
+    private readonly ConcurrentQueue<AuditEvent> _audit = new();
 
     private readonly TimeProvider _clock;
 
     public ControlPlaneStore(TimeProvider clock) => _clock = clock;
+
+    private void Audit(string kind, string tenantId, string detail) =>
+        _audit.Enqueue(new AuditEvent(_clock.GetUtcNow(), kind, tenantId, detail));
+
+    /// <summary>Append-only audit events for a tenant, oldest first.</summary>
+    public IReadOnlyCollection<AuditEvent> AuditFor(string tenantId) =>
+        _audit.Where(e => e.TenantId == tenantId).OrderBy(e => e.At).ToList();
 
     private static string NewId(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
 
@@ -53,6 +62,7 @@ public sealed class ControlPlaneStore
     {
         var tenant = new Tenant(NewId("ten"), name, _clock.GetUtcNow());
         _tenants[tenant.Id] = tenant;
+        Audit("tenant.created", tenant.Id, tenant.Name);
         return tenant;
     }
 
@@ -69,6 +79,7 @@ public sealed class ControlPlaneStore
         }
         var token = new BootstrapToken(NewSecret(), tenantId, _clock.GetUtcNow().Add(ttl), Used: false);
         _bootstrap[token.Token] = token;
+        Audit("enrollment.token_issued", tenantId, "bootstrap token issued");
         return new BootstrapTokenView(token.Token, token.ExpiresAt);
     }
 
@@ -97,6 +108,7 @@ public sealed class ControlPlaneStore
         _gateways[gateway.Id] = gateway;
         var credential = NewSecret();
         _deviceCredentials[gateway.Id] = credential;
+        Audit("gateway.enrolled", gateway.TenantId, gateway.Id);
         return new EnrollmentResult(gateway.Id, gateway.TenantId, credential);
     }
 
@@ -108,13 +120,60 @@ public sealed class ControlPlaneStore
             .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt))
             .ToList();
 
-    /// <summary>Validate a gateway's device credential (used by later gateway calls).</summary>
+    /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>
     public bool ValidateDeviceCredential(string gatewayId, string credential) =>
         _deviceCredentials.TryGetValue(gatewayId, out var stored) &&
         CryptographicOperations.FixedTimeEquals(
             System.Text.Encoding.UTF8.GetBytes(stored),
             System.Text.Encoding.UTF8.GetBytes(credential));
+
+    /// <summary>The tenant that owns a gateway, if it exists.</summary>
+    public string? TenantOfGateway(string gatewayId) =>
+        _gateways.TryGetValue(gatewayId, out var gw) ? gw.TenantId : null;
+
+    /// <summary>
+    /// Publish a new config version for a gateway within a tenant. Config is
+    /// always marked non-production here — production config requires a separate,
+    /// approved pipeline. Returns null if the gateway is not in that tenant.
+    /// </summary>
+    public ConfigView? PublishConfig(string tenantId, string gatewayId, string settingsJson)
+    {
+        if (TenantOfGateway(gatewayId) != tenantId)
+        {
+            return null;
+        }
+        var next = _configs.AddOrUpdate(
+            gatewayId,
+            _ => new ConfigRecord(1, "non-production", settingsJson, _clock.GetUtcNow(), tenantId),
+            (_, existing) => existing with
+            {
+                Version = existing.Version + 1,
+                SettingsJson = settingsJson,
+                PublishedAt = _clock.GetUtcNow(),
+            });
+        Audit("config.published", tenantId, $"{gatewayId} v{next.Version}");
+        return new ConfigView(gatewayId, next.Version, next.Environment, next.SettingsJson, next.PublishedAt);
+    }
+
+    /// <summary>The current config for a gateway, or null if none published.</summary>
+    public ConfigView? CurrentConfig(string gatewayId)
+    {
+        if (!_configs.TryGetValue(gatewayId, out var c))
+        {
+            return null;
+        }
+        Audit("config.fetched", c.TenantId, gatewayId);
+        return new ConfigView(gatewayId, c.Version, c.Environment, c.SettingsJson, c.PublishedAt);
+    }
 }
+
+internal sealed record ConfigRecord(int Version, string Environment, string SettingsJson, DateTimeOffset PublishedAt, string TenantId);
+
+/// <summary>A published gateway config (non-production).</summary>
+public sealed record ConfigView(string GatewayId, int Version, string Environment, string SettingsJson, DateTimeOffset PublishedAt);
+
+/// <summary>An append-only audit event.</summary>
+public sealed record AuditEvent(DateTimeOffset At, string Kind, string TenantId, string Detail);
 
 /// <summary>A bootstrap token as returned to the operator (token shown once).</summary>
 public sealed record BootstrapTokenView(string Token, DateTimeOffset ExpiresAt);
