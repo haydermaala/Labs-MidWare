@@ -130,6 +130,20 @@ app.MapPost("/api/gateways/enroll", (EnrollRequest body, IControlPlaneStore stor
     return result is null ? Results.Unauthorized() : Results.Json(result);
 });
 
+// A gateway reports liveness, authenticated by its device credential. A
+// decommissioned gateway has no credential and is rejected.
+app.MapPost("/api/gateways/heartbeat", (IControlPlaneStore store, HttpRequest req) =>
+{
+    var gatewayId = req.Headers["X-Gateway-Id"].ToString();
+    var credential = req.Headers["X-Gateway-Credential"].ToString();
+    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    {
+        return Results.Unauthorized();
+    }
+    store.RecordHeartbeat(gatewayId);
+    return Results.NoContent();
+});
+
 // A gateway fetches its own config, authenticated by its device credential.
 app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =>
 {
@@ -139,6 +153,8 @@ app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =
     {
         return Results.Unauthorized();
     }
+    // An authenticated config fetch is also a liveness signal.
+    store.RecordHeartbeat(gatewayId);
     var config = store.CurrentConfig(gatewayId);
     return config is null ? Results.NoContent() : Results.Json(config);
 });

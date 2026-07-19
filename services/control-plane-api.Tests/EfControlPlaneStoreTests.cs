@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Time.Testing;
 
 namespace ControlPlane.Api.Tests;
 
@@ -19,8 +20,10 @@ public sealed class EfControlPlaneStoreTests
     }
 
     // A fresh, isolated database per store keeps tests independent (unique name).
-    private static EfControlPlaneStore NewStore() =>
-        new(new TestFactory($"cp_{Guid.NewGuid():N}"), TimeProvider.System);
+    private static EfControlPlaneStore NewStore() => NewStore(TimeProvider.System);
+
+    private static EfControlPlaneStore NewStore(TimeProvider clock) =>
+        new(new TestFactory($"cp_{Guid.NewGuid():N}"), clock);
 
     [Fact]
     public void CreateTenant_Persists_And_Lists()
@@ -230,5 +233,62 @@ public sealed class EfControlPlaneStoreTests
         Assert.False(store.DecommissionGateway(tenantA.Id, "gw_missing"));
         // The credential is untouched by the failed cross-tenant attempt.
         Assert.True(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+    }
+
+    private static (EfControlPlaneStore store, FakeTimeProvider clock, string tenantId, string gatewayId) EnrolledWithClock()
+    {
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero));
+        var store = NewStore(clock);
+        var tenant = store.CreateTenant("Lab A");
+        var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
+        var gw = store.Enroll(token!.Token, "edge-1")!;
+        return (store, clock, tenant.Id, gw.GatewayId);
+    }
+
+    private static GatewayView Gateway(EfControlPlaneStore store, string tenantId, string gatewayId) =>
+        store.GatewaysFor(tenantId).Single(g => g.Id == gatewayId);
+
+    [Fact]
+    public void Heartbeat_Sets_LastSeen_And_Marks_Online()
+    {
+        var (store, _, tenantId, gatewayId) = EnrolledWithClock();
+
+        // Never seen right after enrollment.
+        Assert.Equal("never", Gateway(store, tenantId, gatewayId).Status);
+        Assert.Null(Gateway(store, tenantId, gatewayId).LastSeenAt);
+
+        Assert.True(store.RecordHeartbeat(gatewayId));
+        var view = Gateway(store, tenantId, gatewayId);
+        Assert.Equal("online", view.Status);
+        Assert.NotNull(view.LastSeenAt);
+    }
+
+    [Fact]
+    public void Gateway_Goes_Offline_After_Timeout_Elapses()
+    {
+        var (store, clock, tenantId, gatewayId) = EnrolledWithClock();
+        store.RecordHeartbeat(gatewayId);
+        Assert.Equal("online", Gateway(store, tenantId, gatewayId).Status);
+
+        clock.Advance(GatewayLiveness.Timeout + TimeSpan.FromSeconds(1));
+        Assert.Equal("offline", Gateway(store, tenantId, gatewayId).Status);
+    }
+
+    [Fact]
+    public void Decommissioned_Gateway_Reports_Decommissioned_Status()
+    {
+        var (store, _, tenantId, gatewayId) = EnrolledWithClock();
+        store.RecordHeartbeat(gatewayId);
+        Assert.Equal("online", Gateway(store, tenantId, gatewayId).Status);
+
+        store.DecommissionGateway(tenantId, gatewayId);
+        Assert.Equal("decommissioned", Gateway(store, tenantId, gatewayId).Status);
+    }
+
+    [Fact]
+    public void RecordHeartbeat_Unknown_Gateway_Is_False()
+    {
+        var store = NewStore();
+        Assert.False(store.RecordHeartbeat("gw_missing"));
     }
 }

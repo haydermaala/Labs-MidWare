@@ -19,11 +19,29 @@ namespace ControlPlane.Api;
 public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active);
 
 /// <summary>An enrolled gateway, scoped to a tenant.</summary>
-public sealed record Gateway(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active);
+public sealed record Gateway(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active, DateTimeOffset? LastSeenAt);
 
 /// <summary>Public view of a gateway (no credential). A decommissioned gateway has
-/// Active=false and its credential revoked.</summary>
-public sealed record GatewayView(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active);
+/// Active=false and its credential revoked. <see cref="Status"/> is a derived
+/// liveness label from <see cref="LastSeenAt"/>.</summary>
+public sealed record GatewayView(
+    string Id, string TenantId, string Name, DateTimeOffset EnrolledAt,
+    bool Active, DateTimeOffset? LastSeenAt, string Status);
+
+/// <summary>Derives a gateway's liveness label. Liveness is never persisted — it is
+/// computed from the last-seen time against a staleness window at read time.</summary>
+public static class GatewayLiveness
+{
+    /// <summary>A gateway seen within this window is considered online.</summary>
+    public static readonly TimeSpan Timeout = TimeSpan.FromMinutes(2);
+
+    /// <summary>"decommissioned" | "never" | "online" | "offline".</summary>
+    public static string Status(bool active, DateTimeOffset? lastSeenAt, DateTimeOffset now) =>
+        !active ? "decommissioned"
+        : lastSeenAt is null ? "never"
+        : now - lastSeenAt.Value <= Timeout ? "online"
+        : "offline";
+}
 
 /// <summary>Result of enrolling: the gateway id and its (one-time shown) device credential.</summary>
 public sealed record EnrollmentResult(string GatewayId, string TenantId, string DeviceCredential);
@@ -139,7 +157,7 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             return null;
         }
 
-        var gateway = new Gateway(Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow(), Active: true);
+        var gateway = new Gateway(Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow(), Active: true, LastSeenAt: null);
         _gateways[gateway.Id] = gateway;
         var credential = Ids.NewSecret();
         _deviceCredentials[gateway.Id] = credential;
@@ -148,17 +166,33 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
     }
 
     /// <summary>Gateways for a tenant — tenant-scoped; never returns other tenants' gateways.</summary>
-    public IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId) =>
-        _gateways.Values
+    public IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId)
+    {
+        var now = _clock.GetUtcNow();
+        return _gateways.Values
             .Where(g => g.TenantId == tenantId)
             .OrderBy(g => g.EnrolledAt)
-            .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active))
+            .Select(g => new GatewayView(
+                g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
+                GatewayLiveness.Status(g.Active, g.LastSeenAt, now)))
             .ToList();
+    }
 
     /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>
     public bool ValidateDeviceCredential(string gatewayId, string credential) =>
         _deviceCredentials.TryGetValue(gatewayId, out var stored) &&
         Ids.CredentialsEqual(stored, credential);
+
+    /// <summary>Record a gateway heartbeat (updates last-seen).</summary>
+    public bool RecordHeartbeat(string gatewayId)
+    {
+        if (!_gateways.TryGetValue(gatewayId, out var gateway))
+        {
+            return false;
+        }
+        _gateways[gatewayId] = gateway with { LastSeenAt = _clock.GetUtcNow() };
+        return true;
+    }
 
     /// <summary>The tenant that owns a gateway, if it exists.</summary>
     public string? TenantOfGateway(string gatewayId) =>

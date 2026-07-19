@@ -48,6 +48,12 @@ public interface IControlPlaneStore
     /// <summary>Validate a gateway's device credential.</summary>
     bool ValidateDeviceCredential(string gatewayId, string credential);
 
+    /// <summary>
+    /// Record that a gateway was just seen (heartbeat / authenticated contact),
+    /// updating its last-seen time. Returns false if the gateway does not exist.
+    /// </summary>
+    bool RecordHeartbeat(string gatewayId);
+
     /// <summary>The tenant that owns a gateway, if any.</summary>
     string? TenantOfGateway(string gatewayId);
 

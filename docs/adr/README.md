@@ -21,3 +21,4 @@ Alternatives).
 | [0012](0012-control-plane-persistence.md) | Control-plane persistence behind a store interface | Accepted |
 | [0013](0013-ef-migrations.md) | EF Core migrations own the control-plane schema | Accepted |
 | [0014](0014-fleet-lifecycle.md) | Soft fleet lifecycle: deactivate tenants, decommission gateways | Accepted |
+| [0015](0015-gateway-heartbeat.md) | Gateway heartbeat and derived liveness | Accepted |

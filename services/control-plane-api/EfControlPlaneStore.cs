@@ -158,10 +158,14 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     public IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        var now = _clock.GetUtcNow();
         return db.Gateways.AsNoTracking()
             .Where(g => g.TenantId == tenantId)
             .OrderBy(g => g.EnrolledAt)
-            .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active))
+            .AsEnumerable() // status is derived against 'now'; compute after materializing
+            .Select(g => new GatewayView(
+                g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
+                GatewayLiveness.Status(g.Active, g.LastSeenAt, now)))
             .ToList();
     }
 
@@ -173,6 +177,19 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
             .Select(c => c.Credential)
             .FirstOrDefault();
         return stored is not null && Ids.CredentialsEqual(stored, credential);
+    }
+
+    public bool RecordHeartbeat(string gatewayId)
+    {
+        using var db = _factory.CreateDbContext();
+        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId);
+        if (gateway is null)
+        {
+            return false;
+        }
+        gateway.LastSeenAt = _clock.GetUtcNow();
+        db.SaveChanges();
+        return true;
     }
 
     public string? TenantOfGateway(string gatewayId)
