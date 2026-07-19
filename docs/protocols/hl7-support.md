@@ -25,7 +25,8 @@ Support is added incrementally with explicit tests. Current status:
 
 | Trigger | Direction | Status |
 |---------|-----------|--------|
-| `ORU^R01` (observation result) | inbound (analyzer → gateway) | **parse only** (structural); mapping/release not yet |
+| `ORU^R01` (observation result) | inbound (analyzer → gateway) | **parse** (structural) |
+| `ORU^R01` (observation result) | outbound (gateway → LIS) | **generate** from canonical (structural) + MLLP delivery with ACK |
 | `ORM^O01` / `OML^O21` (orders) | — | not yet |
 | `ACK` (`MSA`) | outbound/inbound | **generate** (original mode: AA/AE/AR, routing swapped, control id echoed) |
 | `QBP`/`RSP` (queries) | — | not yet |
@@ -39,8 +40,10 @@ convenience accessors are being added for: `MSH`, `PID`, `PV1`, `ORC`, `OBR`,
 ## Transport
 
 - **MLLP** (start block `0x0B`, end block `0x1C 0x0D`): framing + a streaming
-  decoder (buffers partial frames, bounds message size, never panics) are
-  implemented. TCP listener/client integration is the next increment.
+  decoder (buffers partial frames, bounds message size, never panics), plus a
+  **TCP delivery client** (send message, receive ACK) and a **mock LIS** for
+  end-to-end tests. A passive MLLP *listener* (inbound capture) reuses the TCP
+  transport and is a later integration.
 - ACK: **original mode** (`AA`/`AE`/`AR`) generation implemented. Enhanced-mode
   acknowledgement is not yet implemented.
 

@@ -14,6 +14,7 @@
 pub mod ack;
 pub mod message;
 pub mod mllp;
+pub mod net;
 
 pub use ack::{build_ack, AckCode};
 pub use message::{
@@ -21,6 +22,7 @@ pub use message::{
     Segment,
 };
 pub use mllp::{frame as mllp_frame, Decoder as MllpDecoder, MllpError};
+pub use net::{send_message, DeliveryAck, MockLis, NetError};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
