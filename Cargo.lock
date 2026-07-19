@@ -543,6 +543,7 @@ name = "protocol-hl7"
 version = "0.1.0"
 dependencies = [
  "canonical-model",
+ "thiserror",
 ]
 
 [[package]]

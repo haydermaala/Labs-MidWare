@@ -1,6 +1,6 @@
 [package]
 name = "protocol-hl7"
-description = "HL7 v2 / MLLP framing and message parsing."
+description = "HL7 v2: message parsing (lossless), MLLP framing, ACK generation."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 canonical-model.workspace = true
+thiserror.workspace = true
