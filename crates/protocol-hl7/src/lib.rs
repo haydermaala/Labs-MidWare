@@ -11,12 +11,16 @@
 //! never panics on malformed data.
 #![forbid(unsafe_code)]
 
+pub mod ack;
 pub mod message;
+pub mod mllp;
 
+pub use ack::{build_ack, AckCode};
 pub use message::{
     parse_message, parse_segment, Component, Delimiters, Field, Hl7Error, Message, Repetition,
     Segment,
 };
+pub use mllp::{frame as mllp_frame, Decoder as MllpDecoder, MllpError};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
