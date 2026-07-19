@@ -5,12 +5,12 @@
 // bootstrap token which the gateway redeems for a rotated device credential — no
 // long-lived shared secret, and the gateway needs no inbound port.
 //
-// This is an in-memory implementation for development and tests. PostgreSQL +
-// EF Core and OIDC authentication are wired in a later increment (OPEN); admin
-// endpoints here use a simple bearer token from configuration.
+// This is the in-memory implementation of IControlPlaneStore, used for development
+// and tests. The EF Core + PostgreSQL implementation (EfControlPlaneStore) is the
+// deployment backend, selected by configuration. OIDC authentication is wired in a
+// later increment (OPEN); admin endpoints here use a bearer token from config.
 
 using System.Collections.Concurrent;
-using System.Security.Cryptography;
 
 namespace ControlPlane.Api;
 
@@ -28,8 +28,8 @@ public sealed record EnrollmentResult(string GatewayId, string TenantId, string 
 
 internal sealed record BootstrapToken(string Token, string TenantId, DateTimeOffset ExpiresAt, bool Used);
 
-/// <summary>Thread-safe, tenant-scoped in-memory store.</summary>
-public sealed class ControlPlaneStore
+/// <summary>Thread-safe, tenant-scoped in-memory store (dev/tests default).</summary>
+public sealed class InMemoryControlPlaneStore : IControlPlaneStore
 {
     private readonly ConcurrentDictionary<string, Tenant> _tenants = new();
     private readonly ConcurrentDictionary<string, Gateway> _gateways = new();
@@ -40,7 +40,7 @@ public sealed class ControlPlaneStore
 
     private readonly TimeProvider _clock;
 
-    public ControlPlaneStore(TimeProvider clock) => _clock = clock;
+    public InMemoryControlPlaneStore(TimeProvider clock) => _clock = clock;
 
     private void Audit(string kind, string tenantId, string detail) =>
         _audit.Enqueue(new AuditEvent(_clock.GetUtcNow(), kind, tenantId, detail));
@@ -49,18 +49,9 @@ public sealed class ControlPlaneStore
     public IReadOnlyCollection<AuditEvent> AuditFor(string tenantId) =>
         _audit.Where(e => e.TenantId == tenantId).OrderBy(e => e.At).ToList();
 
-    private static string NewId(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
-
-    private static string NewSecret()
-    {
-        Span<byte> bytes = stackalloc byte[32];
-        RandomNumberGenerator.Fill(bytes);
-        return Convert.ToHexString(bytes).ToLowerInvariant();
-    }
-
     public Tenant CreateTenant(string name)
     {
-        var tenant = new Tenant(NewId("ten"), name, _clock.GetUtcNow());
+        var tenant = new Tenant(Ids.New("ten"), name, _clock.GetUtcNow());
         _tenants[tenant.Id] = tenant;
         Audit("tenant.created", tenant.Id, tenant.Name);
         return tenant;
@@ -77,7 +68,7 @@ public sealed class ControlPlaneStore
         {
             return null;
         }
-        var token = new BootstrapToken(NewSecret(), tenantId, _clock.GetUtcNow().Add(ttl), Used: false);
+        var token = new BootstrapToken(Ids.NewSecret(), tenantId, _clock.GetUtcNow().Add(ttl), Used: false);
         _bootstrap[token.Token] = token;
         Audit("enrollment.token_issued", tenantId, "bootstrap token issued");
         return new BootstrapTokenView(token.Token, token.ExpiresAt);
@@ -104,9 +95,9 @@ public sealed class ControlPlaneStore
             return null;
         }
 
-        var gateway = new Gateway(NewId("gw"), token.TenantId, gatewayName, _clock.GetUtcNow());
+        var gateway = new Gateway(Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow());
         _gateways[gateway.Id] = gateway;
-        var credential = NewSecret();
+        var credential = Ids.NewSecret();
         _deviceCredentials[gateway.Id] = credential;
         Audit("gateway.enrolled", gateway.TenantId, gateway.Id);
         return new EnrollmentResult(gateway.Id, gateway.TenantId, credential);
@@ -123,9 +114,7 @@ public sealed class ControlPlaneStore
     /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>
     public bool ValidateDeviceCredential(string gatewayId, string credential) =>
         _deviceCredentials.TryGetValue(gatewayId, out var stored) &&
-        CryptographicOperations.FixedTimeEquals(
-            System.Text.Encoding.UTF8.GetBytes(stored),
-            System.Text.Encoding.UTF8.GetBytes(credential));
+        Ids.CredentialsEqual(stored, credential);
 
     /// <summary>The tenant that owns a gateway, if it exists.</summary>
     public string? TenantOfGateway(string gatewayId) =>
