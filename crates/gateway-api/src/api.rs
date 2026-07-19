@@ -141,6 +141,14 @@ fn build_status(store: &Store) -> Result<Status, StoreError> {
 /// Handle a request against the store. Pure: no I/O beyond the store reads.
 #[must_use]
 pub fn handle(request: &ApiRequest, store: &Store, config: &ApiConfig) -> ApiResponse {
+    // CORS preflight (the desktop webview issues OPTIONS before authed GETs).
+    if request.method == "OPTIONS" {
+        return ApiResponse {
+            status: 204,
+            body: String::new(),
+        };
+    }
+
     // Liveness is unauthenticated.
     if request.method == "GET" && request.path == "/health" {
         return json(200, &health());
@@ -186,22 +194,35 @@ pub fn serve(addr: &str, config: ApiConfig, store: Arc<Mutex<Store>>) -> Result<
                 .map_err(|_| ApiError::Server("poisoned".into()))?;
             handle(&api_request, &store, &config)
         };
-        let http = tiny_http::Response::from_string(response.body)
+        // Loopback API consumed by the desktop webview: permissive CORS is
+        // acceptable (bearer header, no cookies; the socket is loopback-only).
+        let cors: [(&[u8], &[u8]); 3] = [
+            (b"Access-Control-Allow-Origin", b"*"),
+            (b"Access-Control-Allow-Methods", b"GET, OPTIONS"),
+            (
+                b"Access-Control-Allow-Headers",
+                b"Authorization, Content-Type",
+            ),
+        ];
+        let mut http = tiny_http::Response::from_string(response.body)
             .with_status_code(response.status)
             .with_header(
                 tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
                     .expect("valid header"),
             );
+        for (field, value) in cors {
+            http.add_header(tiny_http::Header::from_bytes(field, value).expect("valid header"));
+        }
         let _ = request.respond(http);
     }
     Ok(())
 }
 
 fn to_api_request(request: &tiny_http::Request) -> ApiRequest {
-    let method = if *request.method() == tiny_http::Method::Get {
-        "GET"
-    } else {
-        "OTHER"
+    let method = match request.method() {
+        tiny_http::Method::Get => "GET",
+        tiny_http::Method::Options => "OPTIONS",
+        _ => "OTHER",
     }
     .to_owned();
 
@@ -304,6 +325,18 @@ mod tests {
         // The raw payload bytes must NOT be present (redaction by default).
         assert!(!resp.body.contains("H|"));
         assert!(!resp.body.contains("payload"));
+    }
+
+    #[test]
+    fn options_preflight_returns_204_without_auth() {
+        let store = Store::open_in_memory().unwrap();
+        let req = ApiRequest {
+            method: "OPTIONS".to_owned(),
+            path: "/status".to_owned(),
+            query: Vec::new(),
+            bearer: None,
+        };
+        assert_eq!(handle(&req, &store, &config()).status, 204);
     }
 
     #[test]
