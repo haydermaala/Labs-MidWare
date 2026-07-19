@@ -1,5 +1,7 @@
-// Typed client for the local gateway API (loopback, bearer token).
-// Read-only; consumes the redaction-safe endpoints served by `gatewayd`.
+// Typed clients for the control-plane and gateway REST APIs.
+// The gateway client (below) is read-only over the loopback, redaction-safe
+// endpoints served by `gatewayd`; the control-plane client lives in
+// ./control-plane and is re-exported at the end of this module.
 import type { Health } from '@lab-connect/contracts';
 
 /** Outbox delivery counts by state. */
@@ -81,3 +83,6 @@ export function getRecentMessages(
   const clamped = Math.max(1, Math.min(100, Math.trunc(limit)));
   return getJson<CapturedMessageMeta[]>(opts, `/messages/recent?limit=${clamped}`, true);
 }
+
+// Control-plane (fleet management) client.
+export * from './control-plane';

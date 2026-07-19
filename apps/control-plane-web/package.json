@@ -2,7 +2,7 @@
   "name": "@lab-connect/control-plane-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Web control plane (fleet, drivers, mappings, audit). Phase 1: shell only.",
+  "description": "Web control plane (fleet, drivers, mappings, audit). Phase 8: fleet view.",
   "license": "UNLICENSED",
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -20,9 +21,13 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@testing-library/dom": "10.4.0",
+    "@testing-library/react": "16.1.0",
     "@types/react": "18.3.12",
     "@types/react-dom": "18.3.1",
     "@vitejs/plugin-react": "4.3.4",
-    "vite": "6.4.3"
+    "jsdom": "25.0.1",
+    "vite": "6.4.3",
+    "vitest": "4.1.10"
   }
 }
