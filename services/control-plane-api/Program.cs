@@ -6,6 +6,7 @@
 // PostgreSQL/EF Core and OIDC are wired in a later increment (in-memory for now).
 
 using System.Reflection;
+using System.Text.Json;
 using ControlPlane.Api;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -53,11 +54,41 @@ app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, ControlPlaneSto
     return Results.Json(store.GatewaysFor(tenantId));
 });
 
+// Publish a (non-production) config version for a tenant's gateway.
+app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
+    (string tenantId, string gatewayId, JsonElement settings, ControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    var view = store.PublishConfig(tenantId, gatewayId, settings.GetRawText());
+    return view is null ? Results.NotFound() : Results.Json(view);
+});
+
+// Tenant audit log (admin).
+app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, ControlPlaneStore store, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!store.TenantExists(tenantId)) return Results.NotFound();
+    return Results.Json(store.AuditFor(tenantId));
+});
+
 // --- gateway enrollment (bootstrap token is the credential) ----------------
 app.MapPost("/api/gateways/enroll", (EnrollRequest body, ControlPlaneStore store) =>
 {
     var result = store.Enroll(body.BootstrapToken, string.IsNullOrWhiteSpace(body.Name) ? "gateway" : body.Name.Trim());
     return result is null ? Results.Unauthorized() : Results.Json(result);
+});
+
+// A gateway fetches its own config, authenticated by its device credential.
+app.MapGet("/api/gateways/config", (ControlPlaneStore store, HttpRequest req) =>
+{
+    var gatewayId = req.Headers["X-Gateway-Id"].ToString();
+    var credential = req.Headers["X-Gateway-Credential"].ToString();
+    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    {
+        return Results.Unauthorized();
+    }
+    var config = store.CurrentConfig(gatewayId);
+    return config is null ? Results.NoContent() : Results.Json(config);
 });
 
 app.Run();
