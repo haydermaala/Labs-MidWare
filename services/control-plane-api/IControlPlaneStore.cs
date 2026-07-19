@@ -15,10 +15,28 @@ public interface IControlPlaneStore
     /// <summary>All tenants, oldest first.</summary>
     IReadOnlyCollection<Tenant> Tenants();
 
-    /// <summary>Whether a tenant exists.</summary>
+    /// <summary>Whether a tenant exists (active or deactivated).</summary>
     bool TenantExists(string tenantId);
 
-    /// <summary>Issue a short-lived, single-use bootstrap token for a tenant.</summary>
+    /// <summary>
+    /// Deactivate a tenant (soft): it stops issuing enrollment tokens and enrolling
+    /// gateways, but its gateways, config, and audit trail are retained. No-op if
+    /// already inactive. Returns false if the tenant does not exist.
+    /// </summary>
+    bool DeactivateTenant(string tenantId);
+
+    /// <summary>Reactivate a previously deactivated tenant. Returns false if unknown.</summary>
+    bool ReactivateTenant(string tenantId);
+
+    /// <summary>
+    /// Decommission a gateway within a tenant: mark it inactive and revoke its device
+    /// credential so it can no longer authenticate or fetch config. Irreversible — a
+    /// returning device must re-enroll for a fresh credential. The gateway row and its
+    /// audit history are retained. Returns false if the gateway is not in that tenant.
+    /// </summary>
+    bool DecommissionGateway(string tenantId, string gatewayId);
+
+    /// <summary>Issue a short-lived, single-use bootstrap token for an active tenant.</summary>
     BootstrapTokenView? IssueBootstrapToken(string tenantId, TimeSpan ttl);
 
     /// <summary>Redeem a bootstrap token for a new gateway + device credential.</summary>

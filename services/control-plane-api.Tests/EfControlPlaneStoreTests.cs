@@ -151,4 +151,84 @@ public sealed class EfControlPlaneStoreTests
         // Tenant B only has its own creation event; none of A's leak across.
         Assert.All(bAudit, e => Assert.Equal(tenantB.Id, e.TenantId));
     }
+
+    [Fact]
+    public void New_Tenant_And_Gateway_Are_Active()
+    {
+        var store = NewStore();
+        var tenant = store.CreateTenant("Lab A");
+        Assert.True(tenant.Active);
+        Assert.True(store.Tenants().Single(t => t.Id == tenant.Id).Active);
+
+        var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
+        var gw = store.Enroll(token!.Token, "edge-1")!;
+        Assert.True(store.GatewaysFor(tenant.Id).Single(g => g.Id == gw.GatewayId).Active);
+    }
+
+    [Fact]
+    public void Deactivated_Tenant_Cannot_Issue_Tokens_Until_Reactivated()
+    {
+        var store = NewStore();
+        var tenant = store.CreateTenant("Lab A");
+
+        Assert.True(store.DeactivateTenant(tenant.Id));
+        Assert.False(store.Tenants().Single(t => t.Id == tenant.Id).Active);
+        Assert.Null(store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15)));
+
+        Assert.True(store.ReactivateTenant(tenant.Id));
+        Assert.True(store.Tenants().Single(t => t.Id == tenant.Id).Active);
+        Assert.NotNull(store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15)));
+    }
+
+    [Fact]
+    public void Deactivating_Tenant_After_Token_Issued_Blocks_Enrollment()
+    {
+        var store = NewStore();
+        var tenant = store.CreateTenant("Lab A");
+        var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
+
+        store.DeactivateTenant(tenant.Id);
+        Assert.Null(store.Enroll(token!.Token, "edge-1"));
+    }
+
+    [Fact]
+    public void Deactivate_Unknown_Tenant_Is_False()
+    {
+        var store = NewStore();
+        Assert.False(store.DeactivateTenant("ten_missing"));
+        Assert.False(store.ReactivateTenant("ten_missing"));
+    }
+
+    [Fact]
+    public void Decommission_Marks_Inactive_And_Revokes_Credential()
+    {
+        var store = NewStore();
+        var tenant = store.CreateTenant("Lab A");
+        var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
+        var gw = store.Enroll(token!.Token, "edge-1")!;
+        Assert.True(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+
+        Assert.True(store.DecommissionGateway(tenant.Id, gw.GatewayId));
+
+        // Credential revoked, gateway shows inactive but is still listed (audit/history).
+        Assert.False(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+        var view = store.GatewaysFor(tenant.Id).Single(g => g.Id == gw.GatewayId);
+        Assert.False(view.Active);
+    }
+
+    [Fact]
+    public void Decommission_Is_Tenant_Scoped_And_Handles_Unknown()
+    {
+        var store = NewStore();
+        var tenantA = store.CreateTenant("Lab A");
+        var tenantB = store.CreateTenant("Lab B");
+        var token = store.IssueBootstrapToken(tenantA.Id, TimeSpan.FromMinutes(15));
+        var gw = store.Enroll(token!.Token, "edge-1")!;
+
+        // Another tenant cannot decommission this gateway.
+        Assert.False(store.DecommissionGateway(tenantB.Id, gw.GatewayId));
+        Assert.False(store.DecommissionGateway(tenantA.Id, "gw_missing"));
+        // The credential is untouched by the failed cross-tenant attempt.
+        Assert.True(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+    }
 }

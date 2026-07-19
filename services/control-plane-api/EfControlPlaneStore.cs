@@ -26,11 +26,11 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     public Tenant CreateTenant(string name)
     {
         using var db = _factory.CreateDbContext();
-        var entity = new TenantEntity { Id = Ids.New("ten"), Name = name, CreatedAt = _clock.GetUtcNow() };
+        var entity = new TenantEntity { Id = Ids.New("ten"), Name = name, CreatedAt = _clock.GetUtcNow(), Active = true };
         db.Tenants.Add(entity);
         Audit(db, "tenant.created", entity.Id, entity.Name);
         db.SaveChanges();
-        return new Tenant(entity.Id, entity.Name, entity.CreatedAt);
+        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active);
     }
 
     public IReadOnlyCollection<Tenant> Tenants()
@@ -38,7 +38,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var db = _factory.CreateDbContext();
         return db.Tenants.AsNoTracking()
             .OrderBy(t => t.CreatedAt)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
             .ToList();
     }
 
@@ -48,10 +48,54 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return db.Tenants.AsNoTracking().Any(t => t.Id == tenantId);
     }
 
+    public bool DeactivateTenant(string tenantId) => SetTenantActive(tenantId, active: false);
+
+    public bool ReactivateTenant(string tenantId) => SetTenantActive(tenantId, active: true);
+
+    private bool SetTenantActive(string tenantId, bool active)
+    {
+        using var db = _factory.CreateDbContext();
+        var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
+        if (tenant is null)
+        {
+            return false;
+        }
+        if (tenant.Active != active)
+        {
+            tenant.Active = active;
+            Audit(db, active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
+            db.SaveChanges();
+        }
+        return true;
+    }
+
+    public bool DecommissionGateway(string tenantId, string gatewayId)
+    {
+        using var db = _factory.CreateDbContext();
+        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId && g.TenantId == tenantId);
+        if (gateway is null)
+        {
+            return false;
+        }
+        if (gateway.Active)
+        {
+            gateway.Active = false;
+            // Revoke the device credential so the gateway can no longer authenticate.
+            var credential = db.DeviceCredentials.FirstOrDefault(c => c.GatewayId == gatewayId);
+            if (credential is not null)
+            {
+                db.DeviceCredentials.Remove(credential);
+            }
+            Audit(db, "gateway.decommissioned", tenantId, gatewayId);
+            db.SaveChanges();
+        }
+        return true;
+    }
+
     public BootstrapTokenView? IssueBootstrapToken(string tenantId, TimeSpan ttl)
     {
         using var db = _factory.CreateDbContext();
-        if (!db.Tenants.AsNoTracking().Any(t => t.Id == tenantId))
+        if (!db.Tenants.AsNoTracking().Any(t => t.Id == tenantId && t.Active))
         {
             return null;
         }
@@ -80,6 +124,11 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             return null;
         }
+        // A token issued before its tenant was deactivated must not still enroll.
+        if (!db.Tenants.AsNoTracking().Any(t => t.Id == token.TenantId && t.Active))
+        {
+            return null;
+        }
 
         token.Used = true;
         token.ConcurrencyToken = Ids.New("ct");
@@ -89,6 +138,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
             TenantId = token.TenantId,
             Name = gatewayName,
             EnrolledAt = _clock.GetUtcNow(),
+            Active = true,
         };
         var credential = Ids.NewSecret();
         db.Gateways.Add(gateway);
@@ -111,7 +161,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return db.Gateways.AsNoTracking()
             .Where(g => g.TenantId == tenantId)
             .OrderBy(g => g.EnrolledAt)
-            .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt))
+            .Select(g => new GatewayView(g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active))
             .ToList();
     }
 
