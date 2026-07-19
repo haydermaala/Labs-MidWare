@@ -2,9 +2,11 @@ import { useCallback, useState } from 'react';
 import {
   listTenants,
   listGateways,
+  getAudit,
   deactivateTenant,
   reactivateTenant,
   decommissionGateway,
+  type AuditEvent,
   type ControlPlaneOptions,
   type GatewaySummary,
   type Tenant,
@@ -14,6 +16,9 @@ import { tokens } from '@lab-connect/ui';
 import { ConnectionForm } from './components/ConnectionForm';
 import { TenantList } from './components/TenantList';
 import { GatewayList } from './components/GatewayList';
+import { AuditPanel } from './components/AuditPanel';
+
+type TenantView = 'gateways' | 'audit';
 
 /**
  * Control-plane operator console. Fleet view: tenants and their gateways with
@@ -27,6 +32,8 @@ export function App(): JSX.Element {
   const [tenants, setTenants] = useState<readonly Tenant[]>([]);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
   const [gateways, setGateways] = useState<readonly GatewaySummary[]>([]);
+  const [audit, setAudit] = useState<readonly AuditEvent[]>([]);
+  const [tenantView, setTenantView] = useState<TenantView>('gateways');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -36,9 +43,13 @@ export function App(): JSX.Element {
     [baseUrl, adminToken],
   );
 
-  const loadGateways = useCallback(
+  // Gateways and the audit trail are both tenant-scoped; load them together so the
+  // view toggle is instant and lifecycle actions refresh both.
+  const loadTenantDetail = useCallback(
     async (tenantId: string): Promise<void> => {
-      setGateways(await listGateways(opts(), tenantId));
+      const [g, a] = await Promise.all([listGateways(opts(), tenantId), getAudit(opts(), tenantId)]);
+      setGateways(g);
+      setAudit(a);
     },
     [opts],
   );
@@ -51,6 +62,7 @@ export function App(): JSX.Element {
       setTenants(list);
       setSelectedTenantId(null);
       setGateways([]);
+      setAudit([]);
     } catch (e) {
       setTenants([]);
       setError(e instanceof Error ? e.message : 'connection failed');
@@ -64,13 +76,14 @@ export function App(): JSX.Element {
       setSelectedTenantId(tenantId);
       setError(null);
       try {
-        await loadGateways(tenantId);
+        await loadTenantDetail(tenantId);
       } catch (e) {
         setGateways([]);
-        setError(e instanceof Error ? e.message : 'failed to load gateways');
+        setAudit([]);
+        setError(e instanceof Error ? e.message : 'failed to load tenant detail');
       }
     },
-    [loadGateways],
+    [loadTenantDetail],
   );
 
   // Run a lifecycle action, then refresh the affected views.
@@ -82,7 +95,7 @@ export function App(): JSX.Element {
         await fn();
         setTenants(await listTenants(opts()));
         if (selectedTenantId !== null) {
-          await loadGateways(selectedTenantId);
+          await loadTenantDetail(selectedTenantId);
         }
       } catch (e) {
         setError(e instanceof Error ? e.message : 'action failed');
@@ -90,7 +103,7 @@ export function App(): JSX.Element {
         setBusy(false);
       }
     },
-    [opts, selectedTenantId, loadGateways],
+    [opts, selectedTenantId, loadTenantDetail],
   );
 
   return (
@@ -151,23 +164,76 @@ export function App(): JSX.Element {
           </div>
 
           <div style={{ display: 'grid', gap: tokens.space[3] }}>
-            <h2 style={{ margin: 0, fontSize: 15 }}>
-              {selectedTenantId === null ? 'Gateways' : 'Gateways · fleet status'}
-            </h2>
             {selectedTenantId === null ? (
-              <p style={{ color: '#9aa4b2' }}>Select a tenant to see its gateways.</p>
+              <>
+                <h2 style={{ margin: 0, fontSize: 15 }}>Gateways</h2>
+                <p style={{ color: '#9aa4b2' }}>Select a tenant to see its gateways and audit trail.</p>
+              </>
             ) : (
-              <GatewayList
-                gateways={gateways}
-                busy={busy}
-                onDecommission={(gid) =>
-                  void act(() => decommissionGateway(opts(), selectedTenantId, gid))
-                }
-              />
+              <>
+                <div
+                  role="tablist"
+                  aria-label="Tenant detail"
+                  style={{ display: 'flex', gap: tokens.space[2] }}
+                >
+                  <ViewTab
+                    label="Gateways"
+                    active={tenantView === 'gateways'}
+                    onClick={() => setTenantView('gateways')}
+                  />
+                  <ViewTab
+                    label={`Audit${audit.length > 0 ? ` (${audit.length})` : ''}`}
+                    active={tenantView === 'audit'}
+                    onClick={() => setTenantView('audit')}
+                  />
+                </div>
+                {tenantView === 'gateways' ? (
+                  <GatewayList
+                    gateways={gateways}
+                    busy={busy}
+                    onDecommission={(gid) =>
+                      void act(() => decommissionGateway(opts(), selectedTenantId, gid))
+                    }
+                  />
+                ) : (
+                  <AuditPanel events={audit} />
+                )}
+              </>
             )}
           </div>
         </section>
       )}
     </main>
+  );
+}
+
+function ViewTab({
+  label,
+  active,
+  onClick,
+}: {
+  readonly label: string;
+  readonly active: boolean;
+  readonly onClick: () => void;
+}): JSX.Element {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      style={{
+        background: active ? '#0f1620' : 'transparent',
+        color: active ? tokens.color.fg : '#9aa4b2',
+        border: `1px solid ${active ? tokens.color.accent : '#20242b'}`,
+        borderRadius: 6,
+        padding: `${tokens.space[1]}px ${tokens.space[3]}px`,
+        cursor: 'pointer',
+        fontSize: 13,
+        fontWeight: 600,
+      }}
+    >
+      {label}
+    </button>
   );
 }
