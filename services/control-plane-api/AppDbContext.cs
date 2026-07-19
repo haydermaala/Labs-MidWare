@@ -87,6 +87,9 @@ public sealed class GatewayEntity
 
     /// <summary>A decommissioned gateway is inactive and its credential revoked.</summary>
     public bool Active { get; set; } = true;
+
+    /// <summary>Last authenticated contact (heartbeat/config fetch); null until first seen.</summary>
+    public DateTimeOffset? LastSeenAt { get; set; }
 }
 
 /// <summary>A gateway's rotated device credential.</summary>
