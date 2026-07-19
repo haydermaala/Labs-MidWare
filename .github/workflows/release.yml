@@ -1,0 +1,69 @@
+name: Release
+
+# Builds release artifacts and publishes a GitHub Release with an SBOM,
+# checksums, and build provenance. Triggered by a version tag or manually.
+# This workflow uses only GitHub-hosted infrastructure and the repo's own
+# Releases — it does NOT deploy to Railway/Cloudflare or any external account.
+# Signed OS installers/notarization come in Phase 11 with real signing identities.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release
+  id-token: write # provenance attestation
+  attestations: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build edge binaries (release)
+        run: cargo build --release --bin gatewayd --bin lab-simulator
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Publish control-plane API
+        run: dotnet publish services/control-plane-api/ControlPlane.Api.csproj -c Release -o dist/control-plane
+
+      - name: Stage artifacts
+        run: |
+          mkdir -p dist
+          cp target/release/gatewayd target/release/lab-simulator dist/
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/sbom.spdx.json
+
+      - name: Checksums
+        run: (cd dist && sha256sum gatewayd lab-simulator sbom.spdx.json > SHA256SUMS)
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: |
+            dist/gatewayd
+            dist/lab-simulator
+            dist/sbom.spdx.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/gatewayd
+            dist/lab-simulator
+            dist/sbom.spdx.json
+            dist/SHA256SUMS

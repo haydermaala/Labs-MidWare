@@ -1,0 +1,17 @@
+{
+  "_comment": "Template R2 lifecycle rules for artifact buckets. Apply per environment bucket (labconnect-artifacts-dev / -staging). No identifiable clinical data in R2 until data governance approves.",
+  "rules": [
+    {
+      "id": "expire-dev-diagnostic-bundles",
+      "enabled": true,
+      "prefix": "diagnostic-bundles/",
+      "expiration": { "days": 30 }
+    },
+    {
+      "id": "retain-signed-driver-packages",
+      "enabled": true,
+      "prefix": "drivers/",
+      "abortIncompleteMultipartUpload": { "daysAfterInitiation": 7 }
+    }
+  ]
+}
