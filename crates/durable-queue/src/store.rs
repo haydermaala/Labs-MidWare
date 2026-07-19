@@ -38,6 +38,17 @@ pub struct RawMessageRecord {
     pub encryption: String,
 }
 
+/// A pending outbox item ready for delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDelivery {
+    /// Outbox row id.
+    pub id: String,
+    /// The serialized payload to deliver.
+    pub payload: Vec<u8>,
+    /// Delivery attempts made so far.
+    pub attempts: i64,
+}
+
 /// Redaction-safe metadata for a raw message (no payload bytes).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawMessageMeta {
@@ -275,6 +286,39 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(Enqueue::Inserted(id))
+    }
+
+    /// Fetch up to `limit` pending outbox items, oldest first.
+    pub fn pending_outbox(&self, limit: usize) -> Result<Vec<PendingDelivery>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, payload, attempts FROM outbox WHERE state = 'pending'
+             ORDER BY created_at ASC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], |r| {
+            Ok(PendingDelivery {
+                id: r.get(0)?,
+                payload: r.get(1)?,
+                attempts: r.get(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Record a failed delivery attempt: increment the attempt counter and store
+    /// the error. Leaves the row `pending` for a later retry.
+    pub fn record_attempt(&self, outbox_id: &str, error: &str) -> Result<()> {
+        let affected = self.conn.execute(
+            "UPDATE outbox SET attempts = attempts + 1, last_error = ?2 WHERE id = ?1",
+            params![outbox_id, error],
+        )?;
+        if affected == 0 {
+            return Err(StoreError::NotFound(format!("outbox {outbox_id}")));
+        }
+        Ok(())
     }
 
     /// Count outbox rows in a given state.

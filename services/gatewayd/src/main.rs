@@ -6,6 +6,7 @@
 //! device, synthetic data only. Service/daemon packaging arrives in a later phase.
 #![forbid(unsafe_code)]
 
+mod outbound;
 mod pipeline;
 
 use pipeline::{process_session, PipelineConfig};
@@ -13,9 +14,56 @@ use pipeline::{process_session, PipelineConfig};
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("--demo") => run_demo(),
+        Some("--deliver-demo") => run_deliver_demo(),
         Some("--serve") => run_serve(),
         _ => print_health(),
     }
+}
+
+/// End-to-end demo: ingest a synthetic ASTM session, then deliver the queued
+/// result to an in-process mock LIS over HL7/MLLP and record the ACK. Synthetic
+/// data only; no real device or LIS.
+fn run_deliver_demo() {
+    use durable_queue::Store;
+    use outbound::deliver_pending;
+    use protocol_astm::encode_session;
+    use protocol_hl7::{AckCode, MockLis};
+    use std::time::Duration;
+
+    let message: &[u8] =
+        b"H|\\^&|||analyzer|||||host||P|1\rP|1||PID-SYNTH\rO|1|SPEC-1||^^^GLU\rR|1|^^^GLU|5.30|mmol/L|3.9^5.6|N||F\rL|1|N\r";
+    let session = encode_session(message, 24);
+
+    let dir = std::env::temp_dir().join(format!("gatewayd-deliver-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let mut store = Store::open(dir.join("edge.db")).expect("open store");
+
+    let outcomes = process_session(
+        &mut store,
+        &session,
+        "sim:normal",
+        &PipelineConfig::default(),
+    )
+    .expect("ingest");
+    println!(
+        "ingested {} message(s); pending deliveries = {}",
+        outcomes.len(),
+        store.outbox_count("pending").unwrap_or(-1)
+    );
+
+    let lis = MockLis::spawn(AckCode::Accept).expect("mock LIS");
+    let report =
+        deliver_pending(&mut store, lis.addr(), Duration::from_secs(5), 3, 100).expect("deliver");
+    println!(
+        "delivered={} dead={} retried={}; outbox delivered={} pending={}",
+        report.delivered,
+        report.dead,
+        report.retried,
+        store.outbox_count("delivered").unwrap_or(-1),
+        store.outbox_count("pending").unwrap_or(-1),
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// Serve the local API over loopback. Token comes from `GATEWAYD_API_TOKEN`

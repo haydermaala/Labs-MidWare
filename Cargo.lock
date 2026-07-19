@@ -276,8 +276,10 @@ dependencies = [
  "durable-queue",
  "gateway-api",
  "protocol-astm",
+ "protocol-hl7",
  "serde_json",
  "thiserror",
+ "time",
 ]
 
 [[package]]
