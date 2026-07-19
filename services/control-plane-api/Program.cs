@@ -31,14 +31,18 @@ else
 
 var app = builder.Build();
 
-// Create the schema on startup when running against Postgres. Migrations replace
-// this before production; EnsureCreated is sufficient for the current increment.
+// Apply EF Core migrations on startup when running against Postgres, so the schema
+// is created and kept current in a versioned, auditable way. SchemaBootstrap also
+// adopts a database created by the earlier EnsureCreated (baselining it) so this
+// deploy is a clean no-op. Startup migration suits a single-replica staging deploy;
+// a multi-replica or regulated production rollout should move this to a gated
+// release step (see ADR 0013).
 if (postgres is not null)
 {
     using var scope = app.Services.CreateScope();
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
     using var db = factory.CreateDbContext();
-    db.Database.EnsureCreated();
+    SchemaBootstrap.Apply(db);
 }
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
