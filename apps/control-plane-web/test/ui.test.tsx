@@ -1,10 +1,11 @@
 import { render, screen, fireEvent } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
-import type { GatewaySummary, Tenant } from '@lab-connect/api-client';
+import type { AuditEvent, GatewaySummary, Tenant } from '@lab-connect/api-client';
 import { App } from '../src/App';
 import { StatusBadge } from '../src/components/StatusBadge';
 import { GatewayList } from '../src/components/GatewayList';
 import { TenantList } from '../src/components/TenantList';
+import { AuditPanel } from '../src/components/AuditPanel';
 
 const gateways: GatewaySummary[] = [
   {
@@ -101,5 +102,28 @@ describe('control-plane fleet UI', () => {
     expect(onReactivate).toHaveBeenCalledWith('ten_b');
     fireEvent.click(screen.getByRole('button', { name: /Lab A/ }));
     expect(onSelect).toHaveBeenCalledWith('ten_a');
+  });
+
+  it('AuditPanel shows events newest-first with kind and detail', () => {
+    const events: AuditEvent[] = [
+      { at: '2026-07-19T10:00:00Z', kind: 'tenant.created', tenantId: 'ten_1', detail: 'Lab A' },
+      {
+        at: '2026-07-19T10:05:00Z',
+        kind: 'gateway.decommissioned',
+        tenantId: 'ten_1',
+        detail: 'gw_abc',
+      },
+    ];
+    const { container } = render(<AuditPanel events={events} />);
+    expect(container.textContent).toContain('tenant.created');
+    expect(container.textContent).toContain('gateway.decommissioned');
+    // Newest-first: the decommission (later) row precedes the created row.
+    const body = container.textContent ?? '';
+    expect(body.indexOf('gateway.decommissioned')).toBeLessThan(body.indexOf('tenant.created'));
+  });
+
+  it('AuditPanel shows an empty state', () => {
+    render(<AuditPanel events={[]} />);
+    expect(screen.getByText(/no audit events/i)).toBeTruthy();
   });
 });

@@ -4,6 +4,7 @@ import {
   createTenant,
   deactivateTenant,
   decommissionGateway,
+  getAudit,
   listGateways,
   listTenants,
   reactivateTenant,
@@ -97,6 +98,15 @@ describe('control-plane client', () => {
     const decomm = mockFetch(204, null);
     await decommissionGateway(opts(decomm), 'ten_1', 'gw_1');
     expect(lastCall(decomm)[0].pathname).toBe('/api/tenants/ten_1/gateways/gw_1/decommission');
+  });
+
+  it('getAudit fetches the tenant-scoped, PHI-free audit trail', async () => {
+    const fetchImpl = mockFetch(200, [
+      { at: '2026-07-19T10:00:00Z', kind: 'tenant.created', tenantId: 'ten_1', detail: 'Lab A' },
+    ]);
+    const events = await getAudit(opts(fetchImpl), 'ten_1');
+    expect(lastCall(fetchImpl)[0].pathname).toBe('/api/tenants/ten_1/audit');
+    expect(events[0]!.kind).toBe('tenant.created');
   });
 
   it('throws ApiError with the status on failure', async () => {
