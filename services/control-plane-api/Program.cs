@@ -18,6 +18,22 @@ using Npgsql;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(TimeProvider.System);
 
+// CORS for the browser-based operator console. Locked down by default: only the
+// origins named in ControlPlane:AllowedOrigins (comma-separated) may call the API,
+// and only the headers/methods this API actually uses. No credentials — auth is a
+// bearer token, not cookies. With no configured origins, cross-origin is blocked.
+// The allowlist is evaluated per request against live configuration.
+var configuration = builder.Configuration;
+static string[] AllowedOrigins(IConfiguration config) =>
+    (config["ControlPlane:AllowedOrigins"] ?? string.Empty)
+        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
+    policy
+        .SetIsOriginAllowed(origin =>
+            AllowedOrigins(configuration).Contains(origin, StringComparer.OrdinalIgnoreCase))
+        .WithHeaders("Authorization", "Content-Type")
+        .WithMethods("GET", "POST")));
+
 var postgres = DatabaseConfig.ResolveConnectionString(builder.Configuration);
 if (postgres is not null)
 {
@@ -44,6 +60,8 @@ if (postgres is not null)
     using var db = factory.CreateDbContext();
     SchemaBootstrap.Apply(db);
 }
+
+app.UseCors();
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];

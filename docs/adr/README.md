@@ -22,3 +22,4 @@ Alternatives).
 | [0013](0013-ef-migrations.md) | EF Core migrations own the control-plane schema | Accepted |
 | [0014](0014-fleet-lifecycle.md) | Soft fleet lifecycle: deactivate tenants, decommission gateways | Accepted |
 | [0015](0015-gateway-heartbeat.md) | Gateway heartbeat and derived liveness | Accepted |
+| [0016](0016-operator-console-fleet-view.md) | Operator console fleet view + control-plane CORS | Accepted |
