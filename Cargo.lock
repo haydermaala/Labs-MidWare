@@ -182,6 +182,9 @@ name = "driver-runtime"
 version = "0.1.0"
 dependencies = [
  "canonical-model",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]
