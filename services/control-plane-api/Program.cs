@@ -3,17 +3,43 @@
 // tenant-scoped gateway inventory. Management endpoints require an admin bearer
 // token (from configuration); gateway enrollment authenticates with a single-use
 // bootstrap token. No PHI, result values, or secrets appear in any payload here.
-// PostgreSQL/EF Core and OIDC are wired in a later increment (in-memory for now).
+//
+// Persistence is a deployment choice behind IControlPlaneStore: when a Postgres
+// connection is configured (DATABASE_URL or ConnectionStrings:Postgres) the EF Core
+// store is used and the schema is created on startup; otherwise an in-memory store
+// backs local development and tests. OIDC is wired in a later increment.
 
 using System.Reflection;
 using System.Text.Json;
 using ControlPlane.Api;
+using Microsoft.EntityFrameworkCore;
+using Npgsql;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddSingleton<ControlPlaneStore>();
+
+var postgres = DatabaseConfig.ResolveConnectionString(builder.Configuration);
+if (postgres is not null)
+{
+    builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseNpgsql(postgres));
+    builder.Services.AddSingleton<IControlPlaneStore, EfControlPlaneStore>();
+}
+else
+{
+    builder.Services.AddSingleton<IControlPlaneStore, InMemoryControlPlaneStore>();
+}
 
 var app = builder.Build();
+
+// Create the schema on startup when running against Postgres. Migrations replace
+// this before production; EnsureCreated is sufficient for the current increment.
+if (postgres is not null)
+{
+    using var scope = app.Services.CreateScope();
+    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
+    using var db = factory.CreateDbContext();
+    db.Database.EnsureCreated();
+}
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];
@@ -27,7 +53,7 @@ app.MapGet("/health", () => Results.Json(new HealthResponse("ok", "control-plane
 app.MapGet("/health/ready", () => Results.Json(new HealthResponse("ready", "control-plane-api", version)));
 
 // --- tenant management (admin) --------------------------------------------
-app.MapPost("/api/tenants", (CreateTenantRequest body, ControlPlaneStore store, HttpRequest req) =>
+app.MapPost("/api/tenants", (CreateTenantRequest body, IControlPlaneStore store, HttpRequest req) =>
 {
     if (!IsAdmin(req)) return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest(new { error = "name required" });
@@ -35,11 +61,11 @@ app.MapPost("/api/tenants", (CreateTenantRequest body, ControlPlaneStore store, 
     return Results.Created($"/api/tenants/{tenant.Id}", tenant);
 });
 
-app.MapGet("/api/tenants", (ControlPlaneStore store, HttpRequest req) =>
+app.MapGet("/api/tenants", (IControlPlaneStore store, HttpRequest req) =>
     IsAdmin(req) ? Results.Json(store.Tenants()) : Results.Unauthorized());
 
 // Issue a short-lived, single-use bootstrap token an operator hands to a gateway.
-app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, ControlPlaneStore store, HttpRequest req) =>
+app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
 {
     if (!IsAdmin(req)) return Results.Unauthorized();
     var token = store.IssueBootstrapToken(tenantId, TimeSpan.FromMinutes(15));
@@ -47,7 +73,7 @@ app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, Contr
 });
 
 // Tenant-scoped gateway inventory (never returns another tenant's gateways).
-app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, ControlPlaneStore store, HttpRequest req) =>
+app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
 {
     if (!IsAdmin(req)) return Results.Unauthorized();
     if (!store.TenantExists(tenantId)) return Results.NotFound();
@@ -56,7 +82,7 @@ app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, ControlPlaneSto
 
 // Publish a (non-production) config version for a tenant's gateway.
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
-    (string tenantId, string gatewayId, JsonElement settings, ControlPlaneStore store, HttpRequest req) =>
+    (string tenantId, string gatewayId, JsonElement settings, IControlPlaneStore store, HttpRequest req) =>
 {
     if (!IsAdmin(req)) return Results.Unauthorized();
     var view = store.PublishConfig(tenantId, gatewayId, settings.GetRawText());
@@ -64,7 +90,7 @@ app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
 });
 
 // Tenant audit log (admin).
-app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, ControlPlaneStore store, HttpRequest req) =>
+app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
 {
     if (!IsAdmin(req)) return Results.Unauthorized();
     if (!store.TenantExists(tenantId)) return Results.NotFound();
@@ -72,14 +98,14 @@ app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, ControlPlaneStore 
 });
 
 // --- gateway enrollment (bootstrap token is the credential) ----------------
-app.MapPost("/api/gateways/enroll", (EnrollRequest body, ControlPlaneStore store) =>
+app.MapPost("/api/gateways/enroll", (EnrollRequest body, IControlPlaneStore store) =>
 {
     var result = store.Enroll(body.BootstrapToken, string.IsNullOrWhiteSpace(body.Name) ? "gateway" : body.Name.Trim());
     return result is null ? Results.Unauthorized() : Results.Json(result);
 });
 
 // A gateway fetches its own config, authenticated by its device credential.
-app.MapGet("/api/gateways/config", (ControlPlaneStore store, HttpRequest req) =>
+app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =>
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();

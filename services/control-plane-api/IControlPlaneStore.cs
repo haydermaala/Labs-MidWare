@@ -1,0 +1,62 @@
+// The control-plane store contract, implemented by an in-memory store (dev/tests)
+// and an EF Core + PostgreSQL store (staging/production). Endpoints depend on the
+// interface, so the persistence backend is a deployment choice.
+
+using System.Security.Cryptography;
+
+namespace ControlPlane.Api;
+
+/// <summary>Tenant + gateway + enrollment persistence, tenant-scoped by design.</summary>
+public interface IControlPlaneStore
+{
+    /// <summary>Create a tenant.</summary>
+    Tenant CreateTenant(string name);
+
+    /// <summary>All tenants, oldest first.</summary>
+    IReadOnlyCollection<Tenant> Tenants();
+
+    /// <summary>Whether a tenant exists.</summary>
+    bool TenantExists(string tenantId);
+
+    /// <summary>Issue a short-lived, single-use bootstrap token for a tenant.</summary>
+    BootstrapTokenView? IssueBootstrapToken(string tenantId, TimeSpan ttl);
+
+    /// <summary>Redeem a bootstrap token for a new gateway + device credential.</summary>
+    EnrollmentResult? Enroll(string bootstrapToken, string gatewayName);
+
+    /// <summary>Gateways for a tenant (never returns another tenant's gateways).</summary>
+    IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId);
+
+    /// <summary>Validate a gateway's device credential.</summary>
+    bool ValidateDeviceCredential(string gatewayId, string credential);
+
+    /// <summary>The tenant that owns a gateway, if any.</summary>
+    string? TenantOfGateway(string gatewayId);
+
+    /// <summary>Publish a new (non-production) config version for a tenant's gateway.</summary>
+    ConfigView? PublishConfig(string tenantId, string gatewayId, string settingsJson);
+
+    /// <summary>The current config for a gateway, or null.</summary>
+    ConfigView? CurrentConfig(string gatewayId);
+
+    /// <summary>Append-only audit events for a tenant, oldest first.</summary>
+    IReadOnlyCollection<AuditEvent> AuditFor(string tenantId);
+}
+
+/// <summary>Shared id/secret generation.</summary>
+internal static class Ids
+{
+    public static string New(string prefix) => $"{prefix}_{Guid.NewGuid():N}";
+
+    public static string NewSecret()
+    {
+        Span<byte> bytes = stackalloc byte[32];
+        RandomNumberGenerator.Fill(bytes);
+        return Convert.ToHexString(bytes).ToLowerInvariant();
+    }
+
+    public static bool CredentialsEqual(string a, string b) =>
+        CryptographicOperations.FixedTimeEquals(
+            System.Text.Encoding.UTF8.GetBytes(a),
+            System.Text.Encoding.UTF8.GetBytes(b));
+}

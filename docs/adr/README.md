@@ -18,3 +18,4 @@ Alternatives).
 | [0009](0009-passive-capture-transport.md) | Capture-only transport contract | Accepted |
 | [0010](0010-astm-engine-layering.md) | ASTM engine layering and never-panic/fuzz policy | Accepted |
 | [0011](0011-driver-signing.md) | Signed, data-first drivers with a verified install lifecycle | Accepted |
+| [0012](0012-control-plane-persistence.md) | Control-plane persistence behind a store interface | Accepted |
