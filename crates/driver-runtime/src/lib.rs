@@ -8,11 +8,13 @@
 #![forbid(unsafe_code)]
 
 pub mod manifest;
+pub mod signing;
 
 pub use manifest::{
     Capabilities, DriverStatus, FirmwareRange, Manifest, ManifestError, ProtocolFamily, Signature,
     Transport, SUPPORTED_SCHEMA_VERSION,
 };
+pub use signing::{compute_digest, sign, verify, RevocationList, TrustStore, VerifyError};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
