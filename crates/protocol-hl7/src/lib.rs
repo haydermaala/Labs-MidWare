@@ -1,13 +1,27 @@
-//! HL7 v2 / MLLP framing and message parsing.
+//! HL7 v2 protocol engine.
 //!
-//! Phase 1 scaffold: this crate compiles with a documented placeholder surface.
-//! Product behavior is implemented in later phases per DEVELOPMENT_PLAN.md.
+//! Layers (independently tested):
+//! - [`message`] — HL7 v2 message parsing into a lossless structural form (this
+//!   increment).
+//! - MLLP framing + listener/client — later increment.
+//! - ACK generation and supported profiles (ORU/OML/ORM/ACK…) — later increment.
+//!
+//! Supported versions/profiles are stated explicitly as they land; this crate
+//! does **not** claim generic HL7 compatibility. Input is untrusted and parsing
+//! never panics on malformed data.
 #![forbid(unsafe_code)]
+
+pub mod message;
+
+pub use message::{
+    parse_message, parse_segment, Component, Delimiters, Field, Hl7Error, Message, Repetition,
+    Segment,
+};
 
 /// Semantic version of this crate, surfaced for provenance/audit.
 pub const CRATE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Returns the crate name; placeholder proving the crate links and tests run.
+/// Returns the crate name; retained for provenance/telemetry labelling.
 pub fn crate_name() -> &'static str {
     env!("CARGO_PKG_NAME")
 }
