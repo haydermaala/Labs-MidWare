@@ -1,0 +1,15 @@
+# Build outputs and local cruft — keep images small and reproducible.
+**/bin
+**/obj
+**/target
+**/node_modules
+**/dist
+.git
+.github
+*.md
+apps
+crates
+packages
+tests
+fixtures
+drivers
