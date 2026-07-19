@@ -1,6 +1,6 @@
 [package]
 name = "driver-runtime"
-description = "Declarative, signed, data-first driver runtime."
+description = "Declarative, signed, data-first driver runtime: manifests, verification, mapping."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,8 @@ publish = false
 
 [dependencies]
 canonical-model.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
