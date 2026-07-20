@@ -20,11 +20,17 @@ using System.Text;
 
 namespace ControlPlane.Api;
 
-/// <summary>Public view of a user (never includes the password hash).</summary>
-public sealed record UserView(string Id, string Email, DateTimeOffset CreatedAt, bool EmailVerified, bool Active);
+/// <summary>Public view of a user (never includes the password hash or MFA secret).</summary>
+public sealed record UserView(string Id, string Email, DateTimeOffset CreatedAt, bool EmailVerified, bool Active, bool MfaEnabled);
 
 /// <summary>Result of a successful login: the one-time-shown session token.</summary>
 public sealed record LoginResult(string SessionToken, DateTimeOffset ExpiresAt, UserView User);
+
+/// <summary>Login outcome: either a session, or an MFA challenge to complete.</summary>
+public sealed record LoginOutcome(bool MfaRequired, string? MfaToken, LoginResult? Session);
+
+/// <summary>MFA enrollment material (secret shown once; QR URI for authenticators).</summary>
+public sealed record MfaSetup(string Secret, string ProvisioningUri);
 
 /// <summary>Public view of a session (never includes the token or its hash).</summary>
 public sealed record SessionView(string Id, DateTimeOffset CreatedAt, DateTimeOffset ExpiresAt, DateTimeOffset LastSeenAt, bool Current);
@@ -90,10 +96,11 @@ public sealed class AuthService
     }
 
     /// <summary>
-    /// Verify credentials and open a session. Null on any failure — unknown
-    /// email, wrong password, or deactivated user are indistinguishable.
+    /// Verify credentials. Null on any failure — unknown email, wrong password,
+    /// or deactivated user are indistinguishable. An MFA-enabled account gets a
+    /// short-lived challenge token instead of a session.
     /// </summary>
-    public LoginResult? Login(string email, string password)
+    public LoginOutcome? Login(string email, string password)
     {
         using var db = _factory.CreateDbContext();
         var normalized = NormalizeEmail(email);
@@ -116,6 +123,22 @@ public sealed class AuthService
             user.PasswordHash = _hasher.HashPassword(user, password);
         }
 
+        if (user.MfaEnabledAt is not null)
+        {
+            // Password is only the first factor; hand back a 5-minute challenge.
+            var mfaToken = IssueToken(db, user.Id, "mfa", TimeSpan.FromMinutes(5));
+            Audit(db, "auth.mfa_challenged", user.Id);
+            db.SaveChanges();
+            return new LoginOutcome(true, mfaToken, null);
+        }
+
+        var result = CreateSession(db, user);
+        db.SaveChanges();
+        return new LoginOutcome(false, null, result);
+    }
+
+    private LoginResult CreateSession(AppDbContext db, UserEntity user)
+    {
         var token = "ses_" + Ids.NewSecret();
         var now = _clock.GetUtcNow();
         var session = new UserSessionEntity
@@ -129,7 +152,6 @@ public sealed class AuthService
         };
         db.UserSessions.Add(session);
         Audit(db, "auth.login", user.Id);
-        db.SaveChanges();
         return new LoginResult(token, session.ExpiresAt, View(user));
     }
 
@@ -204,7 +226,118 @@ public sealed class AuthService
     }
 
     private static UserView View(UserEntity u) =>
-        new(u.Id, u.Email, u.CreatedAt, u.EmailVerifiedAt is not null, u.Active);
+        new(u.Id, u.Email, u.CreatedAt, u.EmailVerifiedAt is not null, u.Active, u.MfaEnabledAt is not null);
+
+    // --- MFA: TOTP + recovery codes (Phase C4) ------------------------------
+
+    /// <summary>Begin enrollment: store a pending secret (not armed until a code
+    /// is proven). Null if MFA is already enabled.</summary>
+    public MfaSetup? SetupMfa(string userId)
+    {
+        using var db = _factory.CreateDbContext();
+        var user = db.Users.FirstOrDefault(u => u.Id == userId && u.Active);
+        if (user is null || user.MfaEnabledAt is not null)
+        {
+            return null;
+        }
+        user.MfaSecret = Totp.NewSecret();
+        db.SaveChanges();
+        return new MfaSetup(user.MfaSecret, Totp.ProvisioningUri(user.MfaSecret, user.Email));
+    }
+
+    /// <summary>Arm MFA by proving a code from the enrolled authenticator.
+    /// Returns the recovery codes (shown exactly once) or null.</summary>
+    public IReadOnlyList<string>? EnableMfa(string userId, string code)
+    {
+        using var db = _factory.CreateDbContext();
+        var user = db.Users.FirstOrDefault(u => u.Id == userId && u.Active);
+        if (user?.MfaSecret is null || user.MfaEnabledAt is not null ||
+            !Totp.Verify(user.MfaSecret, code, _clock.GetUtcNow()))
+        {
+            return null;
+        }
+        user.MfaEnabledAt = _clock.GetUtcNow();
+        var codes = new List<string>(8);
+        for (var i = 0; i < 8; i++)
+        {
+            var recovery = $"{Ids.NewSecret()[..5]}-{Ids.NewSecret()[..5]}";
+            codes.Add(recovery);
+            db.RecoveryCodes.Add(new RecoveryCodeEntity
+            {
+                Id = Ids.New("rc"),
+                UserId = userId,
+                CodeHash = HashToken(recovery),
+            });
+        }
+        Audit(db, "auth.mfa_enabled", userId);
+        db.SaveChanges();
+        return codes;
+    }
+
+    /// <summary>Disable MFA (requires a current TOTP code); removes recovery codes.</summary>
+    public bool DisableMfa(string userId, string code)
+    {
+        using var db = _factory.CreateDbContext();
+        var user = db.Users.FirstOrDefault(u => u.Id == userId && u.Active);
+        if (user?.MfaSecret is null || user.MfaEnabledAt is null ||
+            !Totp.Verify(user.MfaSecret, code, _clock.GetUtcNow()))
+        {
+            return false;
+        }
+        user.MfaSecret = null;
+        user.MfaEnabledAt = null;
+        db.RecoveryCodes.RemoveRange(db.RecoveryCodes.Where(r => r.UserId == userId));
+        Audit(db, "auth.mfa_disabled", userId);
+        db.SaveChanges();
+        return true;
+    }
+
+    /// <summary>Complete an MFA login challenge with a TOTP code.</summary>
+    public LoginResult? VerifyMfaLogin(string mfaToken, string code)
+    {
+        using var db = _factory.CreateDbContext();
+        var row = ConsumeToken(db, mfaToken, "mfa");
+        if (row is null)
+        {
+            return null;
+        }
+        var user = db.Users.First(u => u.Id == row.UserId);
+        if (user.MfaSecret is null || !Totp.Verify(user.MfaSecret, code, _clock.GetUtcNow()))
+        {
+            // The challenge token is consumed either way: a wrong code sends the
+            // caller back through the password step rather than allowing retries.
+            db.SaveChanges();
+            return null;
+        }
+        var result = CreateSession(db, user);
+        db.SaveChanges();
+        return result;
+    }
+
+    /// <summary>Complete an MFA login challenge with a single-use recovery code.</summary>
+    public LoginResult? RecoverMfaLogin(string mfaToken, string recoveryCode)
+    {
+        using var db = _factory.CreateDbContext();
+        var row = ConsumeToken(db, mfaToken, "mfa");
+        if (row is null)
+        {
+            return null;
+        }
+        var hash = HashToken(recoveryCode.Trim());
+        var stored = db.RecoveryCodes.FirstOrDefault(r =>
+            r.UserId == row.UserId && r.CodeHash == hash && r.UsedAt == null);
+        if (stored is null)
+        {
+            db.SaveChanges();
+            return null;
+        }
+        stored.UsedAt = _clock.GetUtcNow();
+        var user = db.Users.First(u => u.Id == row.UserId);
+        Audit(db, "auth.mfa_recovery_used", user.Id);
+        var result = CreateSession(db, user);
+        db.SaveChanges();
+        return result;
+    }
 
     // --- single-use account tokens (email verification, password reset) ----
 

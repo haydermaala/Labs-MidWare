@@ -17,6 +17,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<UserEntity> Users => Set<UserEntity>();
     public DbSet<UserSessionEntity> UserSessions => Set<UserSessionEntity>();
     public DbSet<UserTokenEntity> UserTokens => Set<UserTokenEntity>();
+    public DbSet<RecoveryCodeEntity> RecoveryCodes => Set<RecoveryCodeEntity>();
     public DbSet<MembershipEntity> Memberships => Set<MembershipEntity>();
     public DbSet<InvitationEntity> Invitations => Set<InvitationEntity>();
     public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
@@ -48,6 +49,13 @@ public sealed class AppDbContext : DbContext
             e.ToTable("user_tokens");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<RecoveryCodeEntity>(e =>
+        {
+            e.ToTable("recovery_codes");
+            e.HasKey(x => x.Id);
             e.HasIndex(x => x.UserId);
         });
 
@@ -120,6 +128,19 @@ public sealed class UserEntity
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? EmailVerifiedAt { get; set; }
     public bool Active { get; set; } = true;
+
+    /// <summary>Base32 TOTP secret; set at MFA setup, armed once MfaEnabledAt is set.</summary>
+    public string? MfaSecret { get; set; }
+    public DateTimeOffset? MfaEnabledAt { get; set; }
+}
+
+/// <summary>A single-use MFA recovery code (only its SHA-256 hash is stored).</summary>
+public sealed class RecoveryCodeEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string CodeHash { get; set; } = "";
+    public DateTimeOffset? UsedAt { get; set; }
 }
 
 /// <summary>A server-side session. Only the SHA-256 hash of the opaque token is
