@@ -1,15 +1,18 @@
 # Build outputs and local cruft — keep images small and reproducible.
+# apps/ and packages/ ARE included: the image's web stage builds the operator
+# console (SPA) from the pnpm workspace. Their generated dirs stay excluded via
+# the **/ patterns above; only source + manifests enter the context.
 **/bin
 **/obj
 **/target
 **/node_modules
 **/dist
+# TS incremental state — must not leak in, or `tsc -b` skips emitting dist/.
+**/*.tsbuildinfo
 .git
 .github
 *.md
-apps
 crates
-packages
 tests
 fixtures
 drivers

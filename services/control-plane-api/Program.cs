@@ -109,20 +109,40 @@ if (postgres is not null)
     SchemaBootstrap.Apply(db);
 }
 
-// Security response headers on every response. The API returns JSON only (no
-// HTML), so the CSP is maximally restrictive; HSTS hardens the public HTTPS
-// endpoint (Railway terminates TLS in front of the app). Browsers ignore HSTS
-// over plain http, so it is safe to send unconditionally.
+// Security response headers on every response. This service serves both the JSON
+// API and the single-page operator console (same origin), so the CSP is scoped to
+// what the SPA needs and no more: everything from 'self', data: images, and inline
+// styles (the design system injects its stylesheet as an inline <style>). No
+// inline scripts, no external origins, and framing is denied. HSTS hardens the
+// public HTTPS endpoint (Railway terminates TLS in front of the app); browsers
+// ignore HSTS over plain http, so it is safe to send unconditionally.
+const string csp =
+    "default-src 'self'; " +
+    "base-uri 'self'; " +
+    "object-src 'none'; " +
+    "frame-ancestors 'none'; " +
+    "img-src 'self' data:; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "script-src 'self'; " +
+    "connect-src 'self'; " +
+    "font-src 'self'";
 app.Use(async (ctx, next) =>
 {
     var headers = ctx.Response.Headers;
     headers["X-Content-Type-Options"] = "nosniff";
     headers["X-Frame-Options"] = "DENY";
     headers["Referrer-Policy"] = "no-referrer";
-    headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
+    headers["Content-Security-Policy"] = csp;
     headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains";
     await next();
 });
+
+// Serve the built operator console (SPA) from wwwroot: real files (index.html,
+// hashed JS/CSS assets) are served directly; any unmatched non-API route falls
+// back to index.html so client-side routing works. API + health endpoints are
+// matched first, so they are unaffected.
+app.UseDefaultFiles();
+app.UseStaticFiles();
 
 app.UseCors();
 app.UseRateLimiter();
@@ -729,6 +749,13 @@ app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =
     var config = store.CurrentConfig(gatewayId);
     return config is null ? Results.NoContent() : Results.Json(config);
 });
+
+// SPA client-side routing: any request not matched above and not a real static
+// file is served index.html so the browser router can handle it. Unknown /api/*
+// paths keep returning 404 (JSON callers expect that, not an HTML page) via the
+// more specific fallback, which wins over the catch-all.
+app.MapFallback("/api/{**rest}", () => Results.NotFound());
+app.MapFallbackToFile("index.html");
 
 app.Run();
 

@@ -50,8 +50,13 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
         Assert.Equal("DENY", response.Headers.GetValues("X-Frame-Options").Single());
         Assert.Equal("no-referrer", response.Headers.GetValues("Referrer-Policy").Single());
-        Assert.Contains("default-src 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
         Assert.Contains("max-age=", response.Headers.GetValues("Strict-Transport-Security").Single());
+        // CSP is scoped to what the same-origin SPA needs: self, data: images,
+        // inline styles — no external origins, no inline scripts, framing denied.
+        var policy = response.Headers.GetValues("Content-Security-Policy").Single();
+        Assert.Contains("default-src 'self'", policy);
+        Assert.Contains("script-src 'self'", policy);
+        Assert.Contains("frame-ancestors 'none'", policy);
     }
 
     private sealed record HealthDto(string Status, string Service, string Version);
