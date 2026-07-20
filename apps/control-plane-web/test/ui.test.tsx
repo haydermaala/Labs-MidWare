@@ -249,3 +249,73 @@ describe('gateway onboarding', () => {
     expect(screen.getByDisplayValue(/localhost|railway|http/i)).toBeTruthy();
   });
 });
+
+describe('security settings', () => {
+  function signedIn(routes: Record<string, [number, unknown]>, mfaEnabled = false) {
+    window.sessionStorage.setItem('lc.session', 'ses_test');
+    window.sessionStorage.setItem('lc.tenant', 'ten_1');
+    return stubFetch({
+      '/api/auth/me': [200, { id: 'usr_1', email: 'ops@lab.example', createdAt: '2026-01-01T00:00:00Z', emailVerified: true, active: true, mfaEnabled }],
+      '/api/me/memberships': [200, [{ tenantId: 'ten_1', tenantName: 'Riverside', role: 'owner', tenantActive: true }]],
+      '/api/auth/sessions': [200, [{ id: 's1', createdAt: '2026-07-20T10:00:00Z', expiresAt: '2026-07-27T10:00:00Z', lastSeenAt: '2026-07-20T12:00:00Z', current: true }]],
+      ...routes,
+    });
+  }
+
+  it('guides MFA enrollment: secret, then recovery codes shown once', async () => {
+    vi.stubGlobal('fetch', signedIn({
+      '/api/auth/mfa/setup': [200, { secret: 'JBSWY3DPEHPK3PXP', provisioningUri: 'otpauth://totp/LabConnect:ops@lab.example?secret=JBSWY3DPEHPK3PXP' }],
+      '/api/auth/mfa/enable': [200, { recoveryCodes: ['aaaaa-bbbbb', 'ccccc-ddddd'] }],
+    }));
+    const { SecurityPage } = await import('../src/pages/SecurityPage');
+    renderIn(<SecurityPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /set up two-factor/i }));
+    // The secret is exposed for manual entry, plus the otpauth URI.
+    await waitFor(() => expect(screen.getByDisplayValue('JBSWY3DPEHPK3PXP')).toBeTruthy());
+    expect(screen.getByDisplayValue(/otpauth:\/\/totp/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText(/current 6-digit code/i), { target: { value: '123456' } });
+    fireEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+    // Recovery codes are revealed exactly once, behind an acknowledgement.
+    await waitFor(() => expect(screen.getByText('aaaaa-bbbbb')).toBeTruthy());
+    expect(screen.getByText(/never be shown again/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /saved my recovery codes/i })).toBeTruthy();
+  });
+
+  it('a bad enrollment code surfaces a generic error, not the code', async () => {
+    vi.stubGlobal('fetch', signedIn({
+      '/api/auth/mfa/setup': [200, { secret: 'JBSWY3DPEHPK3PXP', provisioningUri: 'otpauth://x' }],
+      '/api/auth/mfa/enable': [400, { error: 'bad code' }],
+    }));
+    const { SecurityPage } = await import('../src/pages/SecurityPage');
+    renderIn(<SecurityPage />);
+
+    fireEvent.click(await screen.findByRole('button', { name: /set up two-factor/i }));
+    await screen.findByDisplayValue('JBSWY3DPEHPK3PXP');
+    fireEvent.change(screen.getByLabelText(/current 6-digit code/i), { target: { value: '000000' } });
+    fireEvent.click(screen.getByRole('button', { name: /verify and enable/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toMatch(/not accepted/i);
+  });
+
+  it('an MFA-enabled account offers disable, not setup', async () => {
+    vi.stubGlobal('fetch', signedIn({}, true));
+    const { SecurityPage } = await import('../src/pages/SecurityPage');
+    renderIn(<SecurityPage />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /disable/i })).toBeTruthy());
+    expect(screen.queryByRole('button', { name: /set up two-factor/i })).toBeNull();
+  });
+
+  it('lists active sessions, marking the current device', async () => {
+    vi.stubGlobal('fetch', signedIn({}));
+    const { SecurityPage } = await import('../src/pages/SecurityPage');
+    renderIn(<SecurityPage />);
+
+    await waitFor(() => expect(screen.getByText('This device')).toBeTruthy());
+    expect(screen.getByRole('button', { name: /sign out everywhere/i })).toBeTruthy();
+  });
+});
