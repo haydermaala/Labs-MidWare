@@ -11,6 +11,7 @@ import { Button, StatusBadge, color, fontSize, space } from '@lab-connect/ui';
 import type { StatusKind } from '@lab-connect/ui';
 import { API_BASE } from '../config';
 import { useAuth } from '../auth/AuthProvider';
+import { OnboardDrawer } from './OnboardDrawer';
 
 /** The fleet endpoints accept any bearer credential; the console sends the
  * operator's session token and the server authorizes by membership role. */
@@ -149,6 +150,7 @@ export function FleetPage(): JSX.Element {
   const load = useCallback((t: string, id: string) => listGateways(fleetOptions(t), id), []);
   const { state, data, reload } = useTenantData(load);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [onboarding, setOnboarding] = useState(false);
   const canManage = activeRole === 'owner' || activeRole === 'tenant-admin' || activeRole === 'lab-admin';
 
   async function decommission(gatewayId: string): Promise<void> {
@@ -164,13 +166,28 @@ export function FleetPage(): JSX.Element {
 
   return (
     <>
-      <PageHeader title="Fleet" description="Gateways enrolled in this laboratory, with live connectivity status." />
+      <div style={{ display: 'flex', alignItems: 'start', gap: space[4], flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <PageHeader title="Fleet" description="Gateways enrolled in this laboratory, with live connectivity status." />
+        </div>
+        {canManage && state !== 'no-tenant' && (
+          <Button onClick={() => setOnboarding(true)}>Add gateway</Button>
+        )}
+      </div>
+      <OnboardDrawer open={onboarding} onClose={() => setOnboarding(false)} onEnrolled={reload} />
       {state === 'no-tenant' ? <Notice tone="muted">Select a laboratory to view its fleet.</Notice>
         : state === 'loading' ? <Skeleton />
           : state === 'denied' ? <Notice tone="error">You do not have permission to view this fleet.</Notice>
             : state === 'error' ? <Notice tone="error">Could not load gateways. Try again shortly.</Notice>
               : (data ?? []).length === 0
-                ? <Notice tone="muted">No gateways enrolled yet. An administrator can issue an enrollment token to add the first one.</Notice>
+                ? (
+                  <div className="lc-card" style={{ padding: space[5], display: 'grid', gap: space[3], justifyItems: 'start' }}>
+                    <p style={{ margin: 0, color: color.fgMuted }}>
+                      No gateways enrolled yet.{canManage ? ' Add the first one to connect an analyzer.' : ' An administrator can add the first one.'}
+                    </p>
+                    {canManage && <Button onClick={() => setOnboarding(true)}>Add gateway</Button>}
+                  </div>
+                )
                 : <GatewayTable gateways={data ?? []} canManage={canManage} busyId={busyId} onDecommission={decommission} />}
     </>
   );
