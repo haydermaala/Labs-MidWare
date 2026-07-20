@@ -1,5 +1,8 @@
-// Console router. Public routes are reachable signed-out; everything under the
-// shell requires a session and redirects to sign-in otherwise.
+// Console router. Two route trees selected by auth state: signed-out visitors
+// get the public marketing/legal site, signed-in operators get the app shell.
+// Auth + token flows are available in either state (they manage their own
+// redirects). The public "/security" (marketing) and the app "/security"
+// (account settings) intentionally share a path, disambiguated by auth state.
 
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { color, space } from '@lab-connect/ui';
@@ -11,9 +14,13 @@ import { AuditPage, DashboardPage, FleetPage } from './pages/Pages';
 import { SecurityPage } from './pages/SecurityPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PeoplePage } from './pages/PeoplePage';
+import {
+  DocsPage, LandingPage, LegalPage, PricingPage, SecurityPublicPage, StatusPage,
+} from './public/PublicPages';
 
-function RequireSession(): JSX.Element {
+function Router(): JSX.Element {
   const { status } = useAuth();
+
   if (status === 'loading') {
     return (
       <div
@@ -25,32 +32,49 @@ function RequireSession(): JSX.Element {
       </div>
     );
   }
-  if (status === 'signed-out') {
-    return <Navigate to="/sign-in" replace />;
-  }
-  return <AppShell />;
+
+  const authed = status === 'signed-in';
+
+  return (
+    <Routes>
+      {/* Auth + token flows: reachable in any state; each self-redirects. */}
+      <Route path="/sign-in" element={<SignInPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route path="/verify-email" element={<VerifyEmailPage />} />
+      <Route path="/invite" element={<AcceptInvitePage />} />
+
+      {authed ? (
+        <Route element={<AppShell />}>
+          <Route index element={<DashboardPage />} />
+          <Route path="/fleet" element={<FleetPage />} />
+          <Route path="/people" element={<PeoplePage />} />
+          <Route path="/audit" element={<AuditPage />} />
+          <Route path="/security" element={<SecurityPage />} />
+          <Route path="/settings" element={<SettingsPage />} />
+        </Route>
+      ) : (
+        <>
+          <Route index element={<LandingPage />} />
+          <Route path="/pricing" element={<PricingPage />} />
+          <Route path="/security" element={<SecurityPublicPage />} />
+          <Route path="/docs" element={<DocsPage />} />
+          <Route path="/status" element={<StatusPage />} />
+          <Route path="/legal/terms" element={<LegalPage kind="terms" />} />
+          <Route path="/legal/privacy" element={<LegalPage kind="privacy" />} />
+        </>
+      )}
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+  );
 }
 
 export function App(): JSX.Element {
   return (
     <AuthProvider>
       <BrowserRouter>
-        <Routes>
-          <Route path="/sign-in" element={<SignInPage />} />
-          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
-          <Route path="/reset-password" element={<ResetPasswordPage />} />
-          <Route path="/verify-email" element={<VerifyEmailPage />} />
-          <Route path="/invite" element={<AcceptInvitePage />} />
-          <Route element={<RequireSession />}>
-            <Route index element={<DashboardPage />} />
-            <Route path="/fleet" element={<FleetPage />} />
-            <Route path="/people" element={<PeoplePage />} />
-            <Route path="/audit" element={<AuditPage />} />
-            <Route path="/security" element={<SecurityPage />} />
-            <Route path="/settings" element={<SettingsPage />} />
-          </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <Router />
       </BrowserRouter>
     </AuthProvider>
   );

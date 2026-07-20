@@ -9,6 +9,7 @@ import { tenantSwitcherCss } from './shell/TenantSwitcher';
 // ring, component states, responsive shell rules).
 const style = document.createElement('style');
 style.textContent = `${uiCss}${shellCss}${tenantSwitcherCss}
+@media (max-width: 599px) { .lc-public-nav { display: none !important; } }
 .lc-sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; border:0; }
 a { color: inherit; }
 `;
