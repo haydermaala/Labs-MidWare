@@ -102,13 +102,25 @@ public sealed class MembershipService
             .ToList();
     }
 
-    /// <summary>Members of a tenant (admin views).</summary>
+    /// <summary>
+    /// The server-side half of the members query: join + projection only.
+    /// Ordering is deliberately NOT applied here — sorting by a property of a
+    /// projected record cannot be translated to SQL, and the EF in-memory
+    /// provider hides that by evaluating everything client-side. Exposed so a
+    /// test can assert this translates on the relational provider.
+    /// </summary>
+    internal static IQueryable<MemberView> MembersQuery(AppDbContext db, string tenantId) =>
+        db.Memberships.AsNoTracking()
+            .Where(m => m.TenantId == tenantId)
+            .Join(db.Users.AsNoTracking(), m => m.UserId, u => u.Id,
+                (m, u) => new MemberView(u.Id, u.Email, m.Role, m.CreatedAt, m.Active));
+
+    /// <summary>Members of a tenant (admin views), oldest membership first.</summary>
     public IReadOnlyCollection<MemberView> MembersOf(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Memberships.AsNoTracking().Where(m => m.TenantId == tenantId)
-            .Join(db.Users.AsNoTracking(), m => m.UserId, u => u.Id,
-                (m, u) => new MemberView(u.Id, u.Email, m.Role, m.CreatedAt, m.Active))
+        return MembersQuery(db, tenantId)
+            .AsEnumerable() // order client-side over the materialized rows
             .OrderBy(v => v.Since)
             .ToList();
     }

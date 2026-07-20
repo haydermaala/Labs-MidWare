@@ -16,6 +16,7 @@ const ICONS = {
   dashboard: 'M3 13h8V3H3zM13 21h8V11h-8zM13 3v6h8V3zM3 21h8v-6H3z',
   fleet: 'M5 12V7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2v5M4 12h16a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1zM7 16h.01M11 16h.01',
   audit: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M9 15h6M9 11h3',
+  people: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   security: 'M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z',
   menu: 'M4 6h16M4 12h16M4 18h16',
 } as const;
@@ -32,6 +33,7 @@ function Icon({ path }: { readonly path: string }): JSX.Element {
 const NAV = [
   { to: '/', label: 'Dashboard', icon: ICONS.dashboard, end: true },
   { to: '/fleet', label: 'Fleet', icon: ICONS.fleet, end: false },
+  { to: '/people', label: 'People', icon: ICONS.people, end: false },
   { to: '/audit', label: 'Audit', icon: ICONS.audit, end: false },
   { to: '/security', label: 'Security', icon: ICONS.security, end: false },
 ] as const;

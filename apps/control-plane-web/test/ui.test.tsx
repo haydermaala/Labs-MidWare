@@ -131,3 +131,74 @@ describe('fleet table', () => {
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Fleet');
   });
 });
+
+describe('people administration', () => {
+  const members = [
+    { userId: 'usr_owner', email: 'owner@lab.example', role: 'owner', since: '2026-01-01T00:00:00Z', active: true },
+    { userId: 'usr_tech', email: 'tech@lab.example', role: 'technician', since: '2026-02-01T00:00:00Z', active: true },
+  ];
+  const invitations = [
+    { id: 'invt_1', email: 'pending@lab.example', role: 'auditor', expiresAt: '2026-08-01T00:00:00Z', status: 'pending' },
+    { id: 'invt_2', email: 'gone@lab.example', role: 'read-only', expiresAt: '2026-08-01T00:00:00Z', status: 'revoked' },
+  ];
+
+  /** Signs a session in via sessionStorage so the page renders authenticated. */
+  function signedIn(role: string) {
+    window.sessionStorage.setItem('lc.session', 'ses_test');
+    window.sessionStorage.setItem('lc.tenant', 'ten_1');
+    return stubFetch({
+      '/api/auth/me': [200, { id: 'usr_owner', email: 'owner@lab.example', createdAt: '2026-01-01T00:00:00Z', emailVerified: true, active: true, mfaEnabled: false }],
+      '/api/me/memberships': [200, [{ tenantId: 'ten_1', tenantName: 'Riverside', role, tenantActive: true }]],
+      '/api/tenants/ten_1/members': [200, members],
+      '/api/tenants/ten_1/invitations': [200, invitations],
+    });
+  }
+
+  it('owner sees members, roles, and pending invitations', async () => {
+    vi.stubGlobal('fetch', signedIn('owner'));
+    const { PeoplePage } = await import('../src/pages/PeoplePage');
+    renderIn(<PeoplePage />);
+
+    await waitFor(() => expect(screen.getByText('owner@lab.example')).toBeTruthy());
+    expect(screen.getByText('tech@lab.example')).toBeTruthy();
+    expect(screen.getByText('pending@lab.example')).toBeTruthy();
+    // Invitation status uses the shared colour-independent badge.
+    expect(screen.getByText('pending')).toBeTruthy();
+    expect(screen.getByText('revoked')).toBeTruthy();
+  });
+
+  it('protects the last owner: their role select and remove are disabled', async () => {
+    vi.stubGlobal('fetch', signedIn('owner'));
+    const { PeoplePage } = await import('../src/pages/PeoplePage');
+    renderIn(<PeoplePage />);
+
+    await waitFor(() => expect(screen.getByText('owner@lab.example')).toBeTruthy());
+    const ownerRole = screen.getByLabelText(/role for owner@lab.example/i) as HTMLSelectElement;
+    expect(ownerRole.disabled).toBe(true);
+
+    const removeButtons = screen.getAllByRole('button', { name: /remove/i }) as HTMLButtonElement[];
+    // Only the technician can be removed while a single owner remains.
+    expect(removeButtons.filter((b) => b.disabled)).toHaveLength(1);
+  });
+
+  it('a tenant-admin cannot select the owner role when inviting', async () => {
+    vi.stubGlobal('fetch', signedIn('tenant-admin'));
+    const { PeoplePage } = await import('../src/pages/PeoplePage');
+    renderIn(<PeoplePage />);
+
+    await waitFor(() => expect(screen.getByLabelText('Role')).toBeTruthy());
+    const ownerOption = screen
+      .getAllByRole('option', { name: 'owner' })
+      .filter((o) => (o as HTMLOptionElement).disabled);
+    expect(ownerOption.length).toBeGreaterThan(0);
+  });
+
+  it('roles without user management get a permission-denied view, not a broken table', async () => {
+    vi.stubGlobal('fetch', signedIn('technician'));
+    const { PeoplePage } = await import('../src/pages/PeoplePage');
+    renderIn(<PeoplePage />);
+
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/do not have permission/i));
+    expect(screen.queryByRole('button', { name: /send invitation/i })).toBeNull();
+  });
+});
