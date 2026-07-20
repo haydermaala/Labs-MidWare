@@ -1,15 +1,14 @@
-// Shared UI foundation. Phase 1 scaffold: design tokens only. React components
-// are added in Phase 5 once the desktop/web shells stabilize.
+// @lab-connect/ui — LabConnect design system (DESIGN.md is the binding source).
+// tokens: semantic constants · theme: CSS custom properties for both themes ·
+// primitives: Button/Field/StatusBadge/Card with the full interaction matrix.
 
-export const tokens = {
-  color: {
-    // Placeholder neutral palette; finalized with design in a later phase.
-    bg: '#0b0d10',
-    fg: '#e6e9ee',
-    accent: '#3b82f6',
-    danger: '#ef4444',
-  },
-  space: [0, 4, 8, 12, 16, 24, 32] as const,
-} as const;
+export * from './tokens';
+export { themeCss } from './theme';
+export { componentCss, Button, Field, StatusBadge, Card } from './primitives';
+export type { ButtonProps, FieldProps, StatusKind } from './primitives';
 
-export type Tokens = typeof tokens;
+import { themeCss as t } from './theme';
+import { componentCss as c } from './primitives';
+
+/** Everything an app injects once at startup. */
+export const uiCss: string = t + c;
