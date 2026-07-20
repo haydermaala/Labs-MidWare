@@ -122,3 +122,45 @@ export function myMemberships(opts: AuthOptions): Promise<readonly Membership[]>
 export function acceptInvitation(opts: AuthOptions, token: string): Promise<Membership> {
   return json<Membership>(opts, 'POST', '/api/invitations/accept', { token });
 }
+
+/** MFA enrollment material (secret shown once; URI for authenticator apps). */
+export interface MfaSetup {
+  readonly secret: string;
+  readonly provisioningUri: string;
+}
+
+/** Begin MFA enrollment: returns the pending secret to load into an app. */
+export function setupMfa(opts: AuthOptions): Promise<MfaSetup> {
+  return json<MfaSetup>(opts, 'POST', '/api/auth/mfa/setup');
+}
+
+/** Arm MFA by proving a current code; returns recovery codes shown ONCE. */
+export async function enableMfa(opts: AuthOptions, code: string): Promise<readonly string[]> {
+  const raw = await json<{ recoveryCodes: string[] }>(opts, 'POST', '/api/auth/mfa/enable', { code });
+  return raw.recoveryCodes;
+}
+
+/** Disable MFA (requires a current code); burns all recovery codes. */
+export async function disableMfa(opts: AuthOptions, code: string): Promise<void> {
+  await call(opts, 'POST', '/api/auth/mfa/disable', { code });
+}
+
+/** An active session for the signed-in user (never the token). */
+export interface SessionInfo {
+  readonly id: string;
+  readonly createdAt: string;
+  readonly expiresAt: string;
+  readonly lastSeenAt: string;
+  readonly current: boolean;
+}
+
+/** The signed-in user's active sessions, current one marked. */
+export function listSessions(opts: AuthOptions): Promise<readonly SessionInfo[]> {
+  return json<SessionInfo[]>(opts, 'GET', '/api/auth/sessions');
+}
+
+/** Revoke every session (including this one). Returns the count revoked. */
+export async function revokeAllSessions(opts: AuthOptions): Promise<number> {
+  const raw = await json<{ revoked: number }>(opts, 'POST', '/api/auth/sessions/revoke-all');
+  return raw.revoked;
+}

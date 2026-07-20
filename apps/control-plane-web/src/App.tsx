@@ -7,7 +7,8 @@ import { AuthProvider, useAuth } from './auth/AuthProvider';
 import { SignInPage } from './auth/SignInPage';
 import { AcceptInvitePage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './auth/TokenPages';
 import { AppShell } from './shell/AppShell';
-import { AuditPage, DashboardPage, FleetPage, SecurityPage } from './pages/Pages';
+import { AuditPage, DashboardPage, FleetPage } from './pages/Pages';
+import { SecurityPage } from './pages/SecurityPage';
 import { PeoplePage } from './pages/PeoplePage';
 
 function RequireSession(): JSX.Element {
