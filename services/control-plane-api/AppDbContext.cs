@@ -14,6 +14,8 @@ public sealed class AppDbContext : DbContext
 {
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
+    public DbSet<UserEntity> Users => Set<UserEntity>();
+    public DbSet<UserSessionEntity> UserSessions => Set<UserSessionEntity>();
     public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
     public DbSet<GatewayEntity> Gateways => Set<GatewayEntity>();
     public DbSet<DeviceCredentialEntity> DeviceCredentials => Set<DeviceCredentialEntity>();
@@ -23,6 +25,21 @@ public sealed class AppDbContext : DbContext
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
+        modelBuilder.Entity<UserEntity>(e =>
+        {
+            e.ToTable("users");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.Email).IsUnique();
+        });
+
+        modelBuilder.Entity<UserSessionEntity>(e =>
+        {
+            e.ToTable("user_sessions");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.UserId);
+        });
+
         modelBuilder.Entity<TenantEntity>(e =>
         {
             e.ToTable("tenants");
@@ -64,6 +81,31 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(x => x.TenantId);
         });
     }
+}
+
+/// <summary>An account holder. Email is stored normalized (trimmed, lower-case).
+/// PasswordHash uses ASP.NET Core Identity's PBKDF2 v3 format.</summary>
+public sealed class UserEntity
+{
+    public string Id { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string PasswordHash { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? EmailVerifiedAt { get; set; }
+    public bool Active { get; set; } = true;
+}
+
+/// <summary>A server-side session. Only the SHA-256 hash of the opaque token is
+/// stored; the token itself is shown once at login.</summary>
+public sealed class UserSessionEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string TokenHash { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+    public DateTimeOffset LastSeenAt { get; set; }
 }
 
 /// <summary>A tenant row.</summary>
