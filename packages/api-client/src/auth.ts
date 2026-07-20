@@ -210,3 +210,15 @@ export function billingPlans(opts: AuthOptions): Promise<readonly BillingPlan[]>
 export function tenantBilling(opts: AuthOptions, tenantId: string): Promise<TenantBilling> {
   return json<TenantBilling>(opts, 'GET', `/api/tenants/${tenantId}/billing`);
 }
+
+/** Begin hosted checkout for a plan; returns the provider redirect URL. */
+export async function startCheckout(opts: AuthOptions, tenantId: string, planId: string): Promise<string> {
+  const raw = await json<{ url: string }>(opts, 'POST', `/api/tenants/${tenantId}/billing/checkout`, { planId });
+  return raw.url;
+}
+
+/** Open the provider's billing portal; returns the redirect URL. */
+export async function openBillingPortal(opts: AuthOptions, tenantId: string): Promise<string> {
+  const raw = await json<{ url: string }>(opts, 'POST', `/api/tenants/${tenantId}/billing/portal`);
+  return raw.url;
+}

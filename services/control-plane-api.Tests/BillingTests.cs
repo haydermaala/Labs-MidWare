@@ -143,4 +143,116 @@ public sealed class BillingTests : IClassFixture<AuthApiFactory>
         Assert.Equal(HttpStatusCode.Unauthorized,
             (await outsider.GetAsync($"/api/tenants/{tenant}/billing")).StatusCode);
     }
+
+    // --- E2: checkout, portal, webhooks ------------------------------------
+
+    private sealed record UrlDto(string Url);
+    private sealed record AppliedDto(bool Applied);
+
+    /// <summary>POST a raw webhook envelope with the shared-secret signature header.</summary>
+    private async Task<HttpResponseMessage> PostWebhook(string json, string? signature = "fake-signature")
+    {
+        var msg = new HttpRequestMessage(HttpMethod.Post, "/api/billing/webhook")
+        {
+            Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+        };
+        if (signature is not null) msg.Headers.Add("X-Billing-Signature", signature);
+        return await _factory.CreateClient().SendAsync(msg);
+    }
+
+    [Fact]
+    public async Task Checkout_Returns_A_Provider_Redirect_For_A_Billing_Manager()
+    {
+        var tenant = await NewTenant("Checkout Lab");
+        var owner = Session(await NewOwner("bill-checkout@example.test", tenant));
+        var res = await owner.PostAsJsonAsync($"/api/tenants/{tenant}/billing/checkout", new { planId = "laboratory" });
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var body = await res.Content.ReadFromJsonAsync<UrlDto>();
+        Assert.Contains("plan=laboratory", body!.Url);
+        Assert.Contains($"tenant={tenant}", body.Url);
+    }
+
+    [Fact]
+    public async Task Checkout_Rejects_The_Trial_And_Unknown_Plans()
+    {
+        var tenant = await NewTenant("Bad Checkout Lab");
+        var owner = Session(await NewOwner("bill-badcheckout@example.test", tenant));
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/billing/checkout", new { planId = "trial" })).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest,
+            (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/billing/checkout", new { planId = "nope" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Checkout_Requires_Billing_Manager_Authorization()
+    {
+        var tenant = await NewTenant("Guarded Checkout Lab");
+        var outsider = Session(await NewOwner("bill-guard@example.test", await NewTenant("Elsewhere 2")));
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await outsider.PostAsJsonAsync($"/api/tenants/{tenant}/billing/checkout", new { planId = "laboratory" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Portal_Returns_A_Provider_Redirect_For_A_Billing_Manager()
+    {
+        var tenant = await NewTenant("Portal Lab");
+        var owner = Session(await NewOwner("bill-portal@example.test", tenant));
+        var res = await owner.PostAsync($"/api/tenants/{tenant}/billing/portal", null);
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        Assert.Contains("portal=fake", (await res.Content.ReadFromJsonAsync<UrlDto>())!.Url);
+    }
+
+    [Fact]
+    public async Task Webhook_Rejects_A_Bad_Signature()
+    {
+        var tenant = await NewTenant("Webhook Sig Lab");
+        var json = $$"""{"eventId":"evt_sig_1","tenantId":"{{tenant}}","planId":"pilot","status":"active"}""";
+        Assert.Equal(HttpStatusCode.BadRequest, (await PostWebhook(json, "wrong-secret")).StatusCode);
+        Assert.Equal(HttpStatusCode.BadRequest, (await PostWebhook(json, signature: null)).StatusCode);
+        // …and no subscription was created.
+        var owner = Session(await NewOwner("bill-sig@example.test", tenant));
+        var billing = await owner.GetFromJsonAsync<BillingDto>($"/api/tenants/{tenant}/billing");
+        Assert.Equal("trial", billing!.Entitlements.PlanId);
+    }
+
+    [Fact]
+    public async Task Webhook_Applies_A_Subscription_And_Is_Idempotent_On_Replay()
+    {
+        var tenant = await NewTenant("Webhook Apply Lab");
+        var owner = Session(await NewOwner("bill-apply@example.test", tenant));
+        var json = $$"""
+            {"eventId":"evt_apply_1","tenantId":"{{tenant}}","planId":"laboratory","status":"active",
+             "customerId":"cus_wh","subscriptionId":"sub_wh"}
+            """;
+
+        // First delivery applies the change.
+        var first = await PostWebhook(json);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.True((await first.Content.ReadFromJsonAsync<AppliedDto>())!.Applied);
+
+        var billing = await owner.GetFromJsonAsync<BillingDto>($"/api/tenants/{tenant}/billing");
+        Assert.Equal("laboratory", billing!.Entitlements.PlanId);
+        Assert.Equal("active", billing.Entitlements.Status);
+
+        // Replaying the same event id is a no-op (accepted, not applied).
+        var replay = await PostWebhook(json);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.False((await replay.Content.ReadFromJsonAsync<AppliedDto>())!.Applied);
+    }
+
+    [Fact]
+    public async Task Webhook_Can_Cancel_A_Subscription_Dropping_Entitlements_To_Trial()
+    {
+        var tenant = await NewTenant("Webhook Cancel Lab");
+        var owner = Session(await NewOwner("bill-whcancel@example.test", tenant));
+
+        await PostWebhook($$"""{"eventId":"evt_c_1","tenantId":"{{tenant}}","planId":"network","status":"active"}""");
+        Assert.Equal("network",
+            (await owner.GetFromJsonAsync<BillingDto>($"/api/tenants/{tenant}/billing"))!.Entitlements.PlanId);
+
+        await PostWebhook($$"""{"eventId":"evt_c_2","tenantId":"{{tenant}}","planId":"network","status":"canceled"}""");
+        var after = await owner.GetFromJsonAsync<BillingDto>($"/api/tenants/{tenant}/billing");
+        Assert.Equal("trial", after!.Entitlements.PlanId);
+        Assert.Equal("canceled", after.Entitlements.Status);
+    }
 }

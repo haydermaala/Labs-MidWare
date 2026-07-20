@@ -590,6 +590,49 @@ app.MapGet("/api/tenants/{tenantId}/billing", (string tenantId, BillingService b
     });
 });
 
+// Start hosted checkout for a plan. Only a billing manager may spend money; the
+// provider owns the payment page (no card data ever reaches this API).
+app.MapPost("/api/tenants/{tenantId}/billing/checkout",
+    async (string tenantId, CheckoutRequest body, IBillingProvider provider, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageBilling)) return Results.Unauthorized();
+    if (body.PlanId is null || !Plans.IsKnown(body.PlanId) || body.PlanId == Plans.Trial)
+    {
+        return Results.BadRequest(new { error = "unknown or non-purchasable plan" });
+    }
+    var redirect = await provider.CreateCheckoutAsync(tenantId, body.PlanId);
+    return Results.Json(new { url = redirect.Url });
+});
+
+// Open the provider's billing portal (update card, cancel, view invoices).
+app.MapPost("/api/tenants/{tenantId}/billing/portal",
+    async (string tenantId, IBillingProvider provider, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageBilling)) return Results.Unauthorized();
+    var redirect = await provider.CreatePortalAsync(tenantId);
+    return Results.Json(new { url = redirect.Url });
+});
+
+// Provider webhook: the only unauthenticated write here, gated entirely by the
+// provider's signature verification. Applied exactly once (idempotent + replay-
+// safe via the billing_events unique index). Always 200 on a valid signature so
+// the provider does not retry a duplicate we intentionally ignored.
+app.MapPost("/api/billing/webhook", async (IBillingProvider provider, BillingService billing, HttpRequest req) =>
+{
+    using var reader = new StreamReader(req.Body);
+    var payload = await reader.ReadToEndAsync();
+    var signature = req.Headers.TryGetValue("X-Billing-Signature", out var sig) ? sig.ToString() : null;
+
+    var ev = provider.ParseWebhook(payload, signature);
+    if (ev is null)
+    {
+        // Bad signature or unparseable payload — reject without revealing which.
+        return Results.StatusCode(StatusCodes.Status400BadRequest);
+    }
+    var applied = billing.TryApplyProviderEvent(ev);
+    return Results.Json(new { applied });
+});
+
 // --- gateway enrollment (bootstrap token is the credential) ----------------
 app.MapPost("/api/gateways/enroll", (EnrollRequest body, IControlPlaneStore store) =>
 {
@@ -666,6 +709,9 @@ internal sealed record InvitationCreatedResponse(InvitationView Invitation, bool
 
 /// <summary>Rename a tenant.</summary>
 internal sealed record RenameTenantRequest(string? Name);
+
+/// <summary>Begin checkout for a plan.</summary>
+internal sealed record CheckoutRequest(string? PlanId);
 
 /// <summary>A TOTP code for enabling/disabling MFA.</summary>
 internal sealed record MfaCodeRequest(string Code);
