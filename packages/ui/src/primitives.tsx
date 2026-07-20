@@ -8,46 +8,91 @@ import type { ReactNode, ButtonHTMLAttributes, InputHTMLAttributes } from 'react
 export const componentCss = `
 .lc-btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  height: 32px; padding: 0 12px; border-radius: 4px; border: 1px solid transparent;
-  font: 500 14px/1 'Plus Jakarta Sans', system-ui, sans-serif;
-  cursor: pointer; user-select: none; transition: background 120ms, border-color 120ms;
+  height: 36px; padding: 0 15px; border-radius: 8px; border: 1px solid transparent;
+  font: 600 13.5px/1 inherit; letter-spacing: -0.005em;
+  cursor: pointer; user-select: none;
+  transition: background 130ms ease, border-color 130ms ease, box-shadow 130ms ease, transform 90ms ease;
 }
 .lc-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.lc-btn--primary { background: var(--lc-primary); color: var(--lc-primary-fg); }
-.lc-btn--primary:hover:not(:disabled) { filter: brightness(1.08); }
-.lc-btn--primary:active:not(:disabled) { filter: brightness(0.94); }
-.lc-btn--secondary { background: var(--lc-surface-1); color: var(--lc-fg); border-color: var(--lc-border); }
-.lc-btn--secondary:hover:not(:disabled) { background: var(--lc-surface-2); }
-.lc-btn--danger { background: transparent; color: var(--lc-danger); border-color: var(--lc-danger); }
-.lc-btn--danger:hover:not(:disabled) { background: color-mix(in oklch, var(--lc-danger) 10%, transparent); }
+.lc-btn:active:not(:disabled) { transform: translateY(0.5px); }
+.lc-btn--primary { background: var(--lc-primary); color: var(--lc-primary-fg); box-shadow: var(--lc-shadow-sm); }
+.lc-btn--primary:hover:not(:disabled) { background: var(--lc-primary-hover); }
+.lc-btn--secondary { background: var(--lc-surface-1); color: var(--lc-fg); border-color: var(--lc-border-strong); box-shadow: var(--lc-shadow-sm); }
+.lc-btn--secondary:hover:not(:disabled) { background: var(--lc-surface-2); border-color: var(--lc-fg-subtle); }
+.lc-btn--danger { background: transparent; color: var(--lc-danger); border-color: color-mix(in oklch, var(--lc-danger) 45%, transparent); }
+.lc-btn--danger:hover:not(:disabled) { background: color-mix(in oklch, var(--lc-danger) 12%, transparent); border-color: var(--lc-danger); }
 .lc-btn--ghost { background: transparent; color: var(--lc-fg-muted); }
 .lc-btn--ghost:hover:not(:disabled) { background: var(--lc-surface-2); color: var(--lc-fg); }
 
-.lc-field { display: grid; gap: 4px; }
-.lc-field__label { font-size: 12px; font-weight: 500; color: var(--lc-fg-muted); }
+.lc-field { display: grid; gap: 6px; }
+.lc-field__label { font-size: 12.5px; font-weight: 600; color: var(--lc-fg); letter-spacing: -0.005em; }
 .lc-field__error { font-size: 12px; color: var(--lc-danger); }
 .lc-field__help { font-size: 12px; color: var(--lc-fg-muted); }
 .lc-input {
-  height: 32px; padding: 0 10px; border-radius: 4px;
-  border: 1px solid var(--lc-border); background: var(--lc-surface-1); color: var(--lc-fg);
-  font: 400 14px 'Plus Jakarta Sans', system-ui, sans-serif;
+  height: 40px; padding: 0 12px; border-radius: 8px;
+  border: 1px solid var(--lc-border-strong); background: var(--lc-surface-1); color: var(--lc-fg);
+  font: 400 14px inherit; transition: border-color 130ms ease, box-shadow 130ms ease;
 }
-.lc-input:hover:not(:disabled) { border-color: var(--lc-fg-muted); }
-.lc-input:disabled { opacity: 0.5; cursor: not-allowed; background: var(--lc-surface-2); }
+.lc-input::placeholder { color: var(--lc-fg-subtle); }
+.lc-input:hover:not(:disabled) { border-color: var(--lc-fg-subtle); }
+.lc-input:focus, .lc-input:focus-visible {
+  outline: none; border-color: var(--lc-primary);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--lc-primary) 20%, transparent);
+}
+.lc-input:disabled { opacity: 0.55; cursor: not-allowed; background: var(--lc-surface-2); }
 .lc-input[aria-invalid="true"] { border-color: var(--lc-danger); }
+.lc-input[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px color-mix(in oklch, var(--lc-danger) 20%, transparent); }
+select.lc-input { cursor: pointer; padding-right: 8px; }
 
 .lc-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  height: 20px; padding: 0 8px; border-radius: 999px;
-  font-size: 12px; font-weight: 500; border: 1px solid transparent; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 5px;
+  height: 22px; padding: 0 9px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; border: 1px solid transparent; white-space: nowrap; letter-spacing: -0.003em;
 }
-.lc-badge--ok { color: var(--lc-ok); border-color: color-mix(in oklch, var(--lc-ok) 40%, transparent); background: color-mix(in oklch, var(--lc-ok) 10%, transparent); }
-.lc-badge--warn { color: var(--lc-warn); border-color: color-mix(in oklch, var(--lc-warn) 40%, transparent); background: color-mix(in oklch, var(--lc-warn) 10%, transparent); }
-.lc-badge--danger { color: var(--lc-danger); border-color: color-mix(in oklch, var(--lc-danger) 40%, transparent); background: color-mix(in oklch, var(--lc-danger) 10%, transparent); }
-.lc-badge--info { color: var(--lc-info); border-color: color-mix(in oklch, var(--lc-info) 40%, transparent); background: color-mix(in oklch, var(--lc-info) 10%, transparent); }
+.lc-badge svg { flex: none; }
+.lc-badge--ok { color: color-mix(in oklch, var(--lc-ok) 78%, var(--lc-fg)); border-color: color-mix(in oklch, var(--lc-ok) 35%, transparent); background: color-mix(in oklch, var(--lc-ok) 12%, transparent); }
+.lc-badge--warn { color: color-mix(in oklch, var(--lc-warn) 72%, var(--lc-fg)); border-color: color-mix(in oklch, var(--lc-warn) 38%, transparent); background: color-mix(in oklch, var(--lc-warn) 14%, transparent); }
+.lc-badge--danger { color: var(--lc-danger); border-color: color-mix(in oklch, var(--lc-danger) 38%, transparent); background: color-mix(in oklch, var(--lc-danger) 12%, transparent); }
+.lc-badge--info { color: var(--lc-info); border-color: color-mix(in oklch, var(--lc-info) 38%, transparent); background: color-mix(in oklch, var(--lc-info) 12%, transparent); }
 .lc-badge--neutral { color: var(--lc-fg-muted); border-color: var(--lc-border); background: var(--lc-surface-2); }
 
-.lc-card { background: var(--lc-surface-1); border: 1px solid var(--lc-border); border-radius: 6px; }
+/* Cards — soft elevation on surface-1; add lc-card--hover for interactive cards. */
+.lc-card { background: var(--lc-surface-1); border: 1px solid var(--lc-border); border-radius: 12px; box-shadow: var(--lc-shadow-sm); }
+.lc-card--hover { transition: box-shadow 150ms ease, border-color 150ms ease, transform 150ms ease; }
+.lc-card--hover:hover { box-shadow: var(--lc-shadow-md); border-color: var(--lc-border-strong); }
+
+/* Data table conventions: quiet header, hairline rows, hover highlight. */
+.lc-table-wrap { background: var(--lc-surface-1); border: 1px solid var(--lc-border); border-radius: 12px; box-shadow: var(--lc-shadow-sm); overflow: hidden; }
+.lc-table-wrap table { border-collapse: collapse; width: 100%; }
+.lc-table-wrap thead th { background: var(--lc-surface-2); }
+.lc-table-wrap tbody tr { transition: background 120ms ease; }
+.lc-table-wrap tbody tr:hover { background: var(--lc-surface-2); }
+
+/* KPI / stat block — big tabular number, quiet label. */
+.lc-stat { background: var(--lc-surface-1); border: 1px solid var(--lc-border); border-radius: 12px; box-shadow: var(--lc-shadow-sm); padding: 18px 20px; display: grid; gap: 6px; }
+.lc-stat__label { font-size: 12px; font-weight: 600; color: var(--lc-fg-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.lc-stat__value { font-size: 30px; font-weight: 680; line-height: 1; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+
+/* Empty state — composed, with room for an icon, message, and an action. */
+.lc-empty {
+  display: grid; justify-items: center; gap: 12px; text-align: center;
+  padding: 44px 24px; border: 1px dashed var(--lc-border-strong); border-radius: 12px;
+  background: var(--lc-surface-1); color: var(--lc-fg-muted);
+}
+.lc-empty__icon {
+  display: grid; place-items: center; width: 44px; height: 44px; border-radius: 999px;
+  background: var(--lc-primary-soft); color: var(--lc-primary);
+}
+.lc-empty__title { font-size: 15px; font-weight: 650; color: var(--lc-fg); }
+.lc-empty__body { font-size: 13.5px; max-width: 42ch; line-height: 1.55; }
+
+/* Skeleton shimmer — matches layout dimensions, no blocking spinners. */
+@keyframes lc-shimmer { 100% { background-position: -200% 0; } }
+.lc-skeleton {
+  border-radius: 8px;
+  background: linear-gradient(90deg, var(--lc-surface-2) 25%, var(--lc-surface-3) 37%, var(--lc-surface-2) 63%);
+  background-size: 200% 100%; animation: lc-shimmer 1.4s ease infinite;
+}
 
 @keyframes lc-spin { to { transform: rotate(360deg); } }
 .lc-spinner {

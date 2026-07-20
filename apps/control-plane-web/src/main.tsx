@@ -1,5 +1,9 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
+// Self-hosted variable fonts (bundled to /assets, so the CSP's font-src 'self'
+// allows them — the design system references these families).
+import '@fontsource-variable/plus-jakarta-sans';
+import '@fontsource-variable/jetbrains-mono';
 import { uiCss } from '@lab-connect/ui';
 import { App } from './App';
 import { shellCss } from './shell/AppShell';
