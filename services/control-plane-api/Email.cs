@@ -80,6 +80,12 @@ public static class EmailTemplates
         $"Confirm this email address for your LabConnect account:\n\n{link}\n\nThis link is single-use and expires in 24 hours. If you did not create an account, ignore this message.",
         $"<p>Confirm this email address for your LabConnect account:</p><p><a href=\"{link}\">Verify email address</a></p><p>This link is single-use and expires in 24 hours. If you did not create an account, ignore this message.</p>");
 
+    public static OutboundEmail Invitation(string to, string tenantName, string role, string link) => new(
+        to,
+        $"You are invited to {tenantName} on LabConnect",
+        $"You have been invited to join \"{tenantName}\" on LabConnect as {role}.\n\nAccept the invitation:\n\n{link}\n\nThis link is single-use and expires in 7 days. Sign in (or create an account with this email address) first, then open the link.",
+        $"<p>You have been invited to join <strong>{tenantName}</strong> on LabConnect as <strong>{role}</strong>.</p><p><a href=\"{link}\">Accept invitation</a></p><p>This link is single-use and expires in 7 days. Sign in (or create an account with this email address) first, then open the link.</p>");
+
     public static OutboundEmail ResetPassword(string to, string link) => new(
         to,
         "Reset your LabConnect password",

@@ -17,6 +17,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<UserEntity> Users => Set<UserEntity>();
     public DbSet<UserSessionEntity> UserSessions => Set<UserSessionEntity>();
     public DbSet<UserTokenEntity> UserTokens => Set<UserTokenEntity>();
+    public DbSet<MembershipEntity> Memberships => Set<MembershipEntity>();
+    public DbSet<InvitationEntity> Invitations => Set<InvitationEntity>();
     public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
     public DbSet<GatewayEntity> Gateways => Set<GatewayEntity>();
     public DbSet<DeviceCredentialEntity> DeviceCredentials => Set<DeviceCredentialEntity>();
@@ -47,6 +49,22 @@ public sealed class AppDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TokenHash).IsUnique();
             e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<MembershipEntity>(e =>
+        {
+            e.ToTable("memberships");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => new { x.UserId, x.TenantId }).IsUnique();
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<InvitationEntity>(e =>
+        {
+            e.ToTable("invitations");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.TenantId);
         });
 
         modelBuilder.Entity<TenantEntity>(e =>
@@ -128,6 +146,32 @@ public sealed class UserTokenEntity
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? UsedAt { get; set; }
+}
+
+/// <summary>A user's membership in a tenant, carrying exactly one baseline role.</summary>
+public sealed class MembershipEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public bool Active { get; set; } = true;
+}
+
+/// <summary>A single-use email invitation into a tenant (hashed token).</summary>
+public sealed class InvitationEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string Email { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string TokenHash { get; set; } = "";
+    public string CreatedByUserId { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? AcceptedAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
 }
 
 /// <summary>A tenant row.</summary>
