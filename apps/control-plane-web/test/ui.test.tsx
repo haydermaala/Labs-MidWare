@@ -370,3 +370,40 @@ describe('tenant settings', () => {
     expect(deactivate.disabled).toBe(false);
   });
 });
+
+describe('public pages', () => {
+  it('the landing page describes the real architecture and links to sign in', async () => {
+    const { LandingPage } = await import('../src/public/PublicPages');
+    render(<MemoryRouter><LandingPage /></MemoryRouter>);
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/analyzers|LIS/i);
+    expect(screen.getByText(/on-site gateway.*secure outbound.*LIS/i)).toBeTruthy();
+    expect(screen.getAllByRole('link', { name: /get started/i }).length).toBeGreaterThan(0);
+  });
+
+  it('pricing shows scoped tiers but no invented prices', async () => {
+    const { PricingPage } = await import('../src/public/PublicPages');
+    const { container } = render(<MemoryRouter><PricingPage /></MemoryRouter>);
+    expect(screen.getByText('Pilot')).toBeTruthy();
+    expect(screen.getByText('Laboratory')).toBeTruthy();
+    expect(screen.getByText('Network')).toBeTruthy();
+    // No concrete monetary figures are published on this page.
+    expect(container.textContent).not.toMatch(/\$\s?\d/);
+    expect(container.textContent).toMatch(/final pricing is set with your team/i);
+  });
+
+  it('legal pages are clearly marked as placeholders', async () => {
+    const { LegalPage } = await import('../src/public/PublicPages');
+    render(<MemoryRouter><LegalPage kind="terms" /></MemoryRouter>);
+    expect(screen.getByText(/this is a placeholder/i)).toBeTruthy();
+  });
+
+  it('a signed-out visitor at "/" gets the public landing, not sign-in', async () => {
+    window.sessionStorage.clear();
+    vi.stubGlobal('fetch', stubFetch({}));
+    const { App } = await import('../src/App');
+    render(<App />);
+    await waitFor(() => expect(screen.getByRole('heading', { level: 1 }).textContent).toMatch(/analyzers|LIS/i));
+    // Public chrome is present.
+    expect(screen.getByRole('navigation', { name: /primary/i })).toBeTruthy();
+  });
+});
