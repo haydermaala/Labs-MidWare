@@ -58,5 +58,11 @@ public sealed class QueryTranslationTests
         Assert.Contains("memberships", db.Memberships.AsNoTracking()
             .Where(m => m.UserId == "usr_1" && m.Active)
             .ToQueryString(), StringComparison.OrdinalIgnoreCase);
+
+        // FindTenant projects to a record constructor; guard it translates.
+        Assert.Contains("tenants", db.Tenants.AsNoTracking()
+            .Where(t => t.Id == "ten_1")
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
+            .ToQueryString(), StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -81,6 +81,21 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
 
     public bool TenantExists(string tenantId) => _tenants.ContainsKey(tenantId);
 
+    public Tenant? FindTenant(string tenantId) =>
+        _tenants.TryGetValue(tenantId, out var t) ? t : null;
+
+    public Tenant? RenameTenant(string tenantId, string name)
+    {
+        if (!_tenants.TryGetValue(tenantId, out var tenant))
+        {
+            return null;
+        }
+        var renamed = tenant with { Name = name };
+        _tenants[tenantId] = renamed;
+        Audit("tenant.renamed", tenantId, name);
+        return renamed;
+    }
+
     private bool TenantIsActive(string tenantId) =>
         _tenants.TryGetValue(tenantId, out var t) && t.Active;
 

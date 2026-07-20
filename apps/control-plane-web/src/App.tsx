@@ -9,6 +9,7 @@ import { AcceptInvitePage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPag
 import { AppShell } from './shell/AppShell';
 import { AuditPage, DashboardPage, FleetPage } from './pages/Pages';
 import { SecurityPage } from './pages/SecurityPage';
+import { SettingsPage } from './pages/SettingsPage';
 import { PeoplePage } from './pages/PeoplePage';
 
 function RequireSession(): JSX.Element {
@@ -46,6 +47,7 @@ export function App(): JSX.Element {
             <Route path="/people" element={<PeoplePage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="/security" element={<SecurityPage />} />
+            <Route path="/settings" element={<SettingsPage />} />
           </Route>
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>

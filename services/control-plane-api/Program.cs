@@ -123,6 +123,27 @@ app.MapPost("/api/tenants", (CreateTenantRequest body, IControlPlaneStore store,
 app.MapGet("/api/tenants", (IControlPlaneStore store, HttpRequest req) =>
     IsAdmin(req) ? Results.Json(store.Tenants()) : Results.Unauthorized());
 
+// A tenant's general settings (any member of the tenant may read).
+app.MapGet("/api/tenants/{tenantId}/settings", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanView)) return Results.Unauthorized();
+    var tenant = store.FindTenant(tenantId);
+    return tenant is null ? Results.NotFound() : Results.Json(tenant);
+});
+
+// Rename a tenant (owner only). Name is trimmed and length-bounded.
+app.MapPost("/api/tenants/{tenantId}/rename", (string tenantId, RenameTenantRequest body, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageTenant)) return Results.Unauthorized();
+    var name = (body.Name ?? string.Empty).Trim();
+    if (name.Length is < 2 or > 120)
+    {
+        return Results.BadRequest(new { error = "name must be 2 to 120 characters" });
+    }
+    var tenant = store.RenameTenant(tenantId, name);
+    return tenant is null ? Results.NotFound() : Results.Json(tenant);
+});
+
 // Deactivate a tenant (soft): stops new enrollment; data and audit retained.
 app.MapPost("/api/tenants/{tenantId}/deactivate", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
@@ -602,6 +623,9 @@ internal sealed record ChangeRoleRequest(string Role);
 
 /// <summary>A created invitation plus whether the provider accepted its email.</summary>
 internal sealed record InvitationCreatedResponse(InvitationView Invitation, bool EmailDelivered);
+
+/// <summary>Rename a tenant.</summary>
+internal sealed record RenameTenantRequest(string? Name);
 
 /// <summary>A TOTP code for enabling/disabling MFA.</summary>
 internal sealed record MfaCodeRequest(string Code);

@@ -48,6 +48,29 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return db.Tenants.AsNoTracking().Any(t => t.Id == tenantId);
     }
 
+    public Tenant? FindTenant(string tenantId)
+    {
+        using var db = _factory.CreateDbContext();
+        return db.Tenants.AsNoTracking()
+            .Where(t => t.Id == tenantId)
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
+            .FirstOrDefault();
+    }
+
+    public Tenant? RenameTenant(string tenantId, string name)
+    {
+        using var db = _factory.CreateDbContext();
+        var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
+        if (tenant is null)
+        {
+            return null;
+        }
+        tenant.Name = name;
+        Audit(db, "tenant.renamed", tenantId, name);
+        db.SaveChanges();
+        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active);
+    }
+
     public bool DeactivateTenant(string tenantId) => SetTenantActive(tenantId, active: false);
 
     public bool ReactivateTenant(string tenantId) => SetTenantActive(tenantId, active: true);
