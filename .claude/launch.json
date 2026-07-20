@@ -6,6 +6,12 @@
       "runtimeExecutable": "pnpm",
       "runtimeArgs": ["--filter", "@lab-connect/control-plane-web", "dev"],
       "port": 5173
+    },
+    {
+      "name": "gateway-desktop",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["--filter", "@lab-connect/gateway-desktop", "dev"],
+      "port": 1420
     }
   ]
 }

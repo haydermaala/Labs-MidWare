@@ -11,6 +11,7 @@ import { tokens } from '@lab-connect/ui';
 import { ConnectionForm } from './components/ConnectionForm';
 import { StatusPanel } from './components/StatusPanel';
 import { MessagesPanel } from './components/MessagesPanel';
+import { SetupPanel } from './components/SetupPanel';
 
 /**
  * Technician desktop shell. The UI is a read-only client of the local gateway
@@ -80,6 +81,8 @@ export function App(): JSX.Element {
         onToken={setToken}
         onConnect={() => void refresh()}
       />
+
+      {status === null && <SetupPanel />}
 
       {error && (
         <p role="alert" style={{ color: tokens.color.danger }}>
