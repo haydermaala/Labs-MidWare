@@ -4,6 +4,7 @@ import type { CapturedMessageMeta, GatewayStatus } from '@lab-connect/api-client
 import { App } from '../src/App';
 import { StatusPanel } from '../src/components/StatusPanel';
 import { MessagesPanel } from '../src/components/MessagesPanel';
+import { SetupPanel, enrollCommand } from '../src/components/SetupPanel';
 
 describe('technician UI', () => {
   it('App shows the passive-capture badge and title', () => {
@@ -49,5 +50,34 @@ describe('technician UI', () => {
   it('MessagesPanel shows an empty state', () => {
     const { container } = render(<MessagesPanel messages={[]} />);
     expect(container.textContent).toContain('No messages captured yet');
+  });
+
+  it('enrollCommand builds the gatewayd invocation and trims a trailing slash', () => {
+    const cmd = enrollCommand({
+      controlPlaneUrl: 'https://lc.spottiq.com/',
+      name: 'Chem A',
+      bootstrapToken: 'boot_tok_123',
+      captureAddr: '127.0.0.1:9600',
+    });
+    expect(cmd).toContain('LC_CONTROL_PLANE_URL=https://lc.spottiq.com');
+    expect(cmd).not.toContain('spottiq.com/ ');
+    expect(cmd).toContain("GATEWAYD_NAME='Chem A'");
+    expect(cmd).toContain('GATEWAYD_BOOTSTRAP_TOKEN=boot_tok_123');
+    expect(cmd).toContain('gatewayd --run');
+  });
+
+  it('enrollCommand falls back to placeholders when fields are blank', () => {
+    const cmd = enrollCommand({ controlPlaneUrl: '', name: '', bootstrapToken: '', captureAddr: '' });
+    expect(cmd).toContain("GATEWAYD_NAME='edge-gateway'");
+    expect(cmd).toContain('GATEWAYD_BOOTSTRAP_TOKEN=<paste-token>');
+    expect(cmd).toContain('GATEWAYD_CAPTURE_ADDR=127.0.0.1:9600');
+  });
+
+  it('SetupPanel guides enrollment without transmitting the token', () => {
+    const { container } = render(<SetupPanel />);
+    expect(container.textContent).toContain('First-time setup');
+    expect(container.textContent).toContain('single-use');
+    // The generated command is shown so the technician can run it on the host.
+    expect(container.textContent).toContain('gatewayd --run');
   });
 });
