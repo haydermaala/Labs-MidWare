@@ -18,6 +18,7 @@ public sealed class RbacTests : IClassFixture<EmailApiFactory>
     private sealed record LoginDto(string SessionToken, UserDto User);
     private sealed record MembershipDto(string TenantId, string TenantName, string Role);
     private sealed record InvitationDto(string Id, string Email, string Role, string Status);
+    private sealed record InviteResponseDto(InvitationDto Invitation, bool EmailDelivered);
 
     private HttpClient Admin()
     {
@@ -147,7 +148,7 @@ public sealed class RbacTests : IClassFixture<EmailApiFactory>
 
         var created = await admin.PostAsJsonAsync($"/api/tenants/{tenant}/invitations",
             new { email = "revoked@example.test", role = "read-only" });
-        var invitation = (await created.Content.ReadFromJsonAsync<InvitationDto>())!;
+        var invitation = (await created.Content.ReadFromJsonAsync<InviteResponseDto>())!.Invitation;
         var token = Regex.Match(_factory.Outbox.Sent.Last(e => e.To == "revoked@example.test").TextBody,
             @"token=([A-Za-z0-9_\-]+)").Groups[1].Value;
 

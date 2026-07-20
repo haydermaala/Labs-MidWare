@@ -199,8 +199,17 @@ export function PeoplePage(): JSX.Element {
             isOwner={isOwner}
             invitations={invitations}
             busy={busy}
-            onInvite={(email, role) => run('invite',
-              () => inviteMember(opts(token!), activeTenantId!, email, role).then(() => undefined))}
+            onInvite={(email, role) => run('invite', async () => {
+              const result = await inviteMember(opts(token!), activeTenantId!, email, role);
+              if (!result.emailDelivered) {
+                // Non-fatal: the invitation exists, but the operator must know the
+                // email did not go out so they can re-send or share the link.
+                setNotice(
+                  `Invitation to ${result.invitation.email} was created, but the email could not be ` +
+                  'sent right now. It is listed below — you can revoke and re-send it once email recovers.',
+                );
+              }
+            })}
             onRevoke={(id) => run(`revoke-${id}`,
               () => revokeInvitation(opts(token!), activeTenantId!, id))}
           />

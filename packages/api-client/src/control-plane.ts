@@ -195,14 +195,21 @@ export async function removeMember(
   );
 }
 
-/** Invite a user into a tenant with a role. */
+/** Result of creating an invitation, including whether its email was delivered. */
+export interface InvitationCreated {
+  readonly invitation: InvitationView;
+  readonly emailDelivered: boolean;
+}
+
+/** Invite a user into a tenant with a role. Invitation creation is durable even
+ * if delivery fails; the returned flag reports whether the email was accepted. */
 export function inviteMember(
   opts: ControlPlaneOptions,
   tenantId: string,
   email: string,
   role: string,
-): Promise<InvitationView> {
-  return requestJson<InvitationView>(
+): Promise<InvitationCreated> {
+  return requestJson<InvitationCreated>(
     opts, 'POST', `/api/tenants/${encodeURIComponent(tenantId)}/invitations`, { email, role });
 }
 
