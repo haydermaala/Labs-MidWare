@@ -50,6 +50,16 @@ else
 }
 builder.Services.AddSingleton<AuthService>();
 
+// Email: Titan SMTP when configured (Smtp:Host), else a dev/test sink.
+if (!string.IsNullOrEmpty(builder.Configuration["Smtp:Host"]))
+{
+    builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+}
+else
+{
+    builder.Services.AddSingleton<IEmailSender, NullEmailSender>();
+}
+
 // Credential-guessing defenses: a tight per-IP fixed window on login attempts.
 // ControlPlane:LoginRatePermit overrides the default (ops tuning + tests); it is
 // resolved per request from live configuration, like the CORS allowlist.
@@ -283,6 +293,53 @@ app.MapPost("/api/auth/sessions/revoke-all", (AuthService auth, HttpRequest req,
     return Results.Json(new { revoked = count });
 });
 
+// --- identity: email verification + password reset (Phase C2) --------------
+// Links use ControlPlane:PublicBaseUrl (the web console origin at launch).
+string Link(string path, string token) =>
+    $"{(app.Configuration["ControlPlane:PublicBaseUrl"] ?? "http://localhost:5173").TrimEnd('/')}{path}?token={token}";
+
+app.MapPost("/api/auth/send-verification", async (AuthService auth, IEmailSender mail, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    var issued = auth.IssueVerification(current.Value.User.Id);
+    if (issued is not null)
+    {
+        await mail.SendAsync(EmailTemplates.VerifyEmail(issued.Value.Email, Link("/verify-email", issued.Value.Token)));
+    }
+    return Results.Accepted();
+}).RequireRateLimiting("login");
+
+app.MapPost("/api/auth/verify-email", (TokenRequest body, AuthService auth) =>
+    auth.VerifyEmail(body.Token)
+        ? Results.NoContent()
+        : Results.BadRequest(new { error = "invalid or expired link; request a new one" }));
+
+// Always 202 regardless of account existence (no oracle); rate limited.
+app.MapPost("/api/auth/forgot-password", async (ForgotPasswordRequest body, AuthService auth, IEmailSender mail) =>
+{
+    var issued = auth.IssuePasswordReset(body.Email);
+    if (issued is not null)
+    {
+        await mail.SendAsync(EmailTemplates.ResetPassword(issued.Value.Email, Link("/reset-password", issued.Value.Token)));
+    }
+    return Results.Accepted();
+}).RequireRateLimiting("login");
+
+app.MapPost("/api/auth/reset-password", (ResetPasswordRequest body, AuthService auth) =>
+{
+    if (!AuthService.PasswordAcceptable(body.NewPassword))
+    {
+        return Results.BadRequest(new { error = "password must be 12 to 256 characters" });
+    }
+    return auth.ResetPassword(body.Token, body.NewPassword)
+        ? Results.NoContent()
+        : Results.BadRequest(new { error = "invalid or expired link; request a new one" });
+}).RequireRateLimiting("login");
+
 // --- gateway enrollment (bootstrap token is the credential) ----------------
 app.MapPost("/api/gateways/enroll", (EnrollRequest body, IControlPlaneStore store) =>
 {
@@ -335,6 +392,15 @@ internal sealed record SignupRequest(string Email, string Password);
 
 /// <summary>Login request.</summary>
 internal sealed record LoginRequest(string Email, string Password);
+
+/// <summary>A single-use account token presented back to the API.</summary>
+internal sealed record TokenRequest(string Token);
+
+/// <summary>Password-reset request (response never reveals account existence).</summary>
+internal sealed record ForgotPasswordRequest(string Email);
+
+/// <summary>Completes a password reset.</summary>
+internal sealed record ResetPasswordRequest(string Token, string NewPassword);
 
 // Exposed so integration tests can host the app via WebApplicationFactory.
 public partial class Program;

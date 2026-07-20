@@ -205,4 +205,103 @@ public sealed class AuthService
 
     private static UserView View(UserEntity u) =>
         new(u.Id, u.Email, u.CreatedAt, u.EmailVerifiedAt is not null, u.Active);
+
+    // --- single-use account tokens (email verification, password reset) ----
+
+    private string IssueToken(AppDbContext db, string userId, string purpose, TimeSpan ttl)
+    {
+        var token = $"{purpose[0]}tk_{Ids.NewSecret()}";
+        var now = _clock.GetUtcNow();
+        db.UserTokens.Add(new UserTokenEntity
+        {
+            Id = Ids.New("utk"),
+            UserId = userId,
+            Purpose = purpose,
+            TokenHash = HashToken(token),
+            CreatedAt = now,
+            ExpiresAt = now.Add(ttl),
+        });
+        return token;
+    }
+
+    private UserTokenEntity? ConsumeToken(AppDbContext db, string token, string purpose)
+    {
+        var now = _clock.GetUtcNow();
+        var row = db.UserTokens.FirstOrDefault(t =>
+            t.TokenHash == HashToken(token) && t.Purpose == purpose && t.UsedAt == null && t.ExpiresAt > now);
+        if (row is null)
+        {
+            return null;
+        }
+        row.UsedAt = now;
+        return row;
+    }
+
+    /// <summary>Issue a 24h email-verification token for a user (email it to them).</summary>
+    public (string Email, string Token)? IssueVerification(string userId)
+    {
+        using var db = _factory.CreateDbContext();
+        var user = db.Users.AsNoTracking().FirstOrDefault(u => u.Id == userId && u.Active);
+        if (user is null)
+        {
+            return null;
+        }
+        var token = IssueToken(db, userId, "verify", TimeSpan.FromHours(24));
+        Audit(db, "auth.verification_sent", userId);
+        db.SaveChanges();
+        return (user.Email, token);
+    }
+
+    /// <summary>Consume a verification token and mark the email verified.</summary>
+    public bool VerifyEmail(string token)
+    {
+        using var db = _factory.CreateDbContext();
+        var row = ConsumeToken(db, token, "verify");
+        if (row is null)
+        {
+            return false;
+        }
+        var user = db.Users.First(u => u.Id == row.UserId);
+        user.EmailVerifiedAt ??= _clock.GetUtcNow();
+        Audit(db, "auth.email_verified", user.Id);
+        db.SaveChanges();
+        return true;
+    }
+
+    /// <summary>Issue a 1h reset token if the email belongs to an active user.
+    /// Null result must NOT change the caller's response (no account oracle).</summary>
+    public (string Email, string Token)? IssuePasswordReset(string email)
+    {
+        using var db = _factory.CreateDbContext();
+        var user = db.Users.AsNoTracking().FirstOrDefault(u => u.Email == NormalizeEmail(email) && u.Active);
+        if (user is null)
+        {
+            return null;
+        }
+        var token = IssueToken(db, user.Id, "reset", TimeSpan.FromHours(1));
+        Audit(db, "auth.reset_requested", user.Id);
+        db.SaveChanges();
+        return (user.Email, token);
+    }
+
+    /// <summary>Consume a reset token, set the new password, revoke all sessions.</summary>
+    public bool ResetPassword(string token, string newPassword)
+    {
+        using var db = _factory.CreateDbContext();
+        var row = ConsumeToken(db, token, "reset");
+        if (row is null)
+        {
+            return false;
+        }
+        var user = db.Users.First(u => u.Id == row.UserId);
+        user.PasswordHash = _hasher.HashPassword(user, newPassword);
+        var now = _clock.GetUtcNow();
+        foreach (var s in db.UserSessions.Where(s => s.UserId == user.Id && s.RevokedAt == null))
+        {
+            s.RevokedAt = now;
+        }
+        Audit(db, "auth.password_reset", user.Id);
+        db.SaveChanges();
+        return true;
+    }
 }

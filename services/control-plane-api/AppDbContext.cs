@@ -16,6 +16,7 @@ public sealed class AppDbContext : DbContext
 
     public DbSet<UserEntity> Users => Set<UserEntity>();
     public DbSet<UserSessionEntity> UserSessions => Set<UserSessionEntity>();
+    public DbSet<UserTokenEntity> UserTokens => Set<UserTokenEntity>();
     public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
     public DbSet<GatewayEntity> Gateways => Set<GatewayEntity>();
     public DbSet<DeviceCredentialEntity> DeviceCredentials => Set<DeviceCredentialEntity>();
@@ -35,6 +36,14 @@ public sealed class AppDbContext : DbContext
         modelBuilder.Entity<UserSessionEntity>(e =>
         {
             e.ToTable("user_sessions");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TokenHash).IsUnique();
+            e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<UserTokenEntity>(e =>
+        {
+            e.ToTable("user_tokens");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TokenHash).IsUnique();
             e.HasIndex(x => x.UserId);
@@ -106,6 +115,19 @@ public sealed class UserSessionEntity
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
+}
+
+/// <summary>A single-use, short-lived account token (email verification or
+/// password reset). Only the SHA-256 hash of the token is stored.</summary>
+public sealed class UserTokenEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string Purpose { get; set; } = ""; // "verify" | "reset"
+    public string TokenHash { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
+    public DateTimeOffset? UsedAt { get; set; }
 }
 
 /// <summary>A tenant row.</summary>
