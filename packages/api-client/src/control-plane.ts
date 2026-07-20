@@ -15,6 +15,15 @@ export interface Tenant {
 }
 
 /** A gateway in the fleet view (no credential; liveness derived server-side). */
+/** PHI-free operational counters a gateway self-reports (counts + timing only). */
+export interface GatewayTelemetry {
+  readonly captured: number;
+  readonly pending: number;
+  readonly delivered: number;
+  readonly dead: number;
+  readonly lastCaptureAt: string | null;
+}
+
 export interface GatewaySummary {
   readonly id: string;
   readonly tenantId: string;
@@ -23,6 +32,7 @@ export interface GatewaySummary {
   readonly active: boolean;
   readonly lastSeenAt: string | null;
   readonly status: GatewayStatusLabel;
+  readonly telemetry: GatewayTelemetry;
 }
 
 /** A one-time bootstrap token an operator hands to a gateway to enroll. */

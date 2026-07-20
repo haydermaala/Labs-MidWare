@@ -662,6 +662,24 @@ app.MapPost("/api/gateways/heartbeat", (IControlPlaneStore store, HttpRequest re
     return Results.NoContent();
 });
 
+// A gateway reports PHI-free operational telemetry (message counts + last capture
+// time), authenticated by its device credential. This also counts as a heartbeat.
+// The payload carries no message content or result values — only counts.
+app.MapPost("/api/gateways/telemetry", (GatewayTelemetryRequest body, IControlPlaneStore store, HttpRequest req) =>
+{
+    var gatewayId = req.Headers["X-Gateway-Id"].ToString();
+    var credential = req.Headers["X-Gateway-Credential"].ToString();
+    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    {
+        return Results.Unauthorized();
+    }
+    // Clamp to non-negative; the edge reports counts, never negatives.
+    var telemetry = new GatewayTelemetry(
+        Math.Max(0, body.Captured), Math.Max(0, body.Pending),
+        Math.Max(0, body.Delivered), Math.Max(0, body.Dead), body.LastCaptureAt);
+    return store.RecordTelemetry(gatewayId, telemetry) ? Results.NoContent() : Results.NotFound();
+});
+
 // A gateway fetches its own config, authenticated by its device credential.
 app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =>
 {
@@ -720,6 +738,10 @@ internal sealed record RenameTenantRequest(string? Name);
 
 /// <summary>Begin checkout for a plan.</summary>
 internal sealed record CheckoutRequest(string? PlanId);
+
+/// <summary>A gateway's PHI-free telemetry self-report (counts + last capture).</summary>
+internal sealed record GatewayTelemetryRequest(
+    long Captured, long Pending, long Delivered, long Dead, DateTimeOffset? LastCaptureAt);
 
 /// <summary>A TOTP code for enabling/disabling MFA.</summary>
 internal sealed record MfaCodeRequest(string Code);

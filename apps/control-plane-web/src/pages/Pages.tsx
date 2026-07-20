@@ -216,6 +216,7 @@ export function GatewayTable({ gateways, canManage, busyId, onDecommission }: {
           <tr>
             <th scope="col" style={th}>Gateway</th>
             <th scope="col" style={th}>Status</th>
+            <th scope="col" style={th}>Messages</th>
             <th scope="col" style={th}>Last seen</th>
             <th scope="col" style={th}>Enrolled</th>
             {canManage && <th scope="col" style={{ ...th, textAlign: 'right' }}>Actions</th>}
@@ -229,6 +230,18 @@ export function GatewayTable({ gateways, canManage, busyId, onDecommission }: {
                 <div className="lc-mono" style={{ fontSize: 11, color: color.fgMuted }}>{g.id.slice(0, 16)}…</div>
               </td>
               <td style={td}><StatusBadge status={g.status as StatusKind} /></td>
+              <td style={{ ...td, whiteSpace: 'nowrap' }} className="lc-tabular" title="captured · delivered · pending · dead">
+                {g.telemetry.captured === 0 && g.telemetry.delivered === 0 && g.telemetry.pending === 0
+                  ? <span style={{ color: color.fgMuted }}>—</span>
+                  : (
+                    <span style={{ fontSize: fontSize.meta }}>
+                      <strong>{g.telemetry.captured}</strong> captured
+                      <span style={{ color: color.fgMuted }}> · {g.telemetry.delivered} delivered</span>
+                      {g.telemetry.pending > 0 && <span style={{ color: color.fgMuted }}> · {g.telemetry.pending} pending</span>}
+                      {g.telemetry.dead > 0 && <span style={{ color: color.danger }}> · {g.telemetry.dead} dead</span>}
+                    </span>
+                  )}
+              </td>
               <td style={{ ...td, whiteSpace: 'nowrap' }} className="lc-tabular">{fmt(g.lastSeenAt)}</td>
               <td style={{ ...td, whiteSpace: 'nowrap' }} className="lc-tabular">{fmt(g.enrolledAt)}</td>
               {canManage && (

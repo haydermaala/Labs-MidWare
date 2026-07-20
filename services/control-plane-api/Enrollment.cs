@@ -18,15 +18,28 @@ namespace ControlPlane.Api;
 /// cannot enroll new gateways.</summary>
 public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active);
 
+/// <summary>PHI-free operational counters a gateway self-reports. These are
+/// message *counts* and timing only — never any message content or result value.
+/// Captured = messages observed from the analyzer; the rest mirror the edge
+/// outbox (pending awaiting delivery, delivered downstream, dead-lettered).</summary>
+public sealed record GatewayTelemetry(
+    long Captured, long Pending, long Delivered, long Dead, DateTimeOffset? LastCaptureAt)
+{
+    /// <summary>The zero snapshot for a gateway that has reported nothing yet.</summary>
+    public static readonly GatewayTelemetry Empty = new(0, 0, 0, 0, null);
+}
+
 /// <summary>An enrolled gateway, scoped to a tenant.</summary>
-public sealed record Gateway(string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active, DateTimeOffset? LastSeenAt);
+public sealed record Gateway(
+    string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active,
+    DateTimeOffset? LastSeenAt, GatewayTelemetry Telemetry);
 
 /// <summary>Public view of a gateway (no credential). A decommissioned gateway has
 /// Active=false and its credential revoked. <see cref="Status"/> is a derived
-/// liveness label from <see cref="LastSeenAt"/>.</summary>
+/// liveness label from <see cref="LastSeenAt"/>. Telemetry is the last self-report.</summary>
 public sealed record GatewayView(
     string Id, string TenantId, string Name, DateTimeOffset EnrolledAt,
-    bool Active, DateTimeOffset? LastSeenAt, string Status);
+    bool Active, DateTimeOffset? LastSeenAt, string Status, GatewayTelemetry Telemetry);
 
 /// <summary>Derives a gateway's liveness label. Liveness is never persisted — it is
 /// computed from the last-seen time against a staleness window at read time.</summary>
@@ -172,7 +185,9 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             return null;
         }
 
-        var gateway = new Gateway(Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow(), Active: true, LastSeenAt: null);
+        var gateway = new Gateway(
+            Ids.New("gw"), token.TenantId, gatewayName, _clock.GetUtcNow(),
+            Active: true, LastSeenAt: null, Telemetry: GatewayTelemetry.Empty);
         _gateways[gateway.Id] = gateway;
         var credential = Ids.NewSecret();
         _deviceCredentials[gateway.Id] = credential;
@@ -189,7 +204,7 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             .OrderBy(g => g.EnrolledAt)
             .Select(g => new GatewayView(
                 g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
-                GatewayLiveness.Status(g.Active, g.LastSeenAt, now)))
+                GatewayLiveness.Status(g.Active, g.LastSeenAt, now), g.Telemetry))
             .ToList();
     }
 
@@ -206,6 +221,18 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             return false;
         }
         _gateways[gatewayId] = gateway with { LastSeenAt = _clock.GetUtcNow() };
+        return true;
+    }
+
+    /// <summary>Record a gateway's PHI-free telemetry snapshot (also counts as a
+    /// heartbeat — a telemetry report proves the gateway is alive).</summary>
+    public bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry)
+    {
+        if (!_gateways.TryGetValue(gatewayId, out var gateway))
+        {
+            return false;
+        }
+        _gateways[gatewayId] = gateway with { LastSeenAt = _clock.GetUtcNow(), Telemetry = telemetry };
         return true;
     }
 
