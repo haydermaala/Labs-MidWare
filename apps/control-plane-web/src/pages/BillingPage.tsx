@@ -8,10 +8,10 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  billingPlans, tenantBilling,
+  billingPlans, openBillingPortal, startCheckout, tenantBilling,
   type AuthOptions, type BillingPlan, type TenantBilling,
 } from '@lab-connect/api-client';
-import { color, fontSize, space } from '@lab-connect/ui';
+import { Button, color, fontSize, space } from '@lab-connect/ui';
 import { API_BASE } from '../config';
 import { useAuth } from '../auth/AuthProvider';
 import { PageHeader } from './Pages';
@@ -39,10 +39,13 @@ function quotaLabel(quota: number): string {
 }
 
 export function BillingPage(): JSX.Element {
-  const { token, activeTenantId } = useAuth();
+  const { token, activeTenantId, activeRole } = useAuth();
+  const canManage = activeRole === 'owner' || activeRole === 'billing-admin';
   const [data, setData] = useState<TenantBilling | null>(null);
   const [plans, setPlans] = useState<readonly BillingPlan[]>([]);
   const [state, setState] = useState<'loading' | 'ready' | 'denied' | 'error'>('loading');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
     if (token === null || activeTenantId === null) return;
@@ -62,12 +65,40 @@ export function BillingPage(): JSX.Element {
 
   useEffect(() => { void load(); }, [load]);
 
+  /** Kicks off a provider redirect (checkout or portal), surfacing failures. */
+  async function redirect(key: string, get: () => Promise<string>): Promise<void> {
+    setBusy(key);
+    setNotice(null);
+    try {
+      const url = await get();
+      window.location.assign(url);
+    } catch {
+      setNotice('That could not be started right now. Please try again shortly.');
+      setBusy(null);
+    }
+  }
+
+  const onCheckout = (planId: string): Promise<void> =>
+    redirect(`checkout-${planId}`, () => startCheckout(opts(token!), activeTenantId!, planId));
+  const onPortal = (): Promise<void> =>
+    redirect('portal', () => openBillingPortal(opts(token!), activeTenantId!));
+
   return (
     <>
       <PageHeader
         title="Billing"
-        description="Your laboratory's plan and what it entitles. Contact us to change plans."
+        description={canManage
+          ? "Your laboratory's plan, what it entitles, and how to change it."
+          : "Your laboratory's plan and what it entitles."}
       />
+
+      {notice !== null && (
+        <p role="alert" style={{
+          margin: `0 0 ${space[4]}px`, padding: `${space[2]}px ${space[3]}px`, borderRadius: 4,
+          color: color.danger, border: `1px solid ${color.danger}`,
+          background: 'color-mix(in oklch, var(--lc-danger) 8%, transparent)', fontSize: fontSize.body,
+        }}>{notice}</p>
+      )}
 
       {state === 'denied' ? (
         <p role="alert" style={{ color: color.danger }}>
@@ -81,8 +112,19 @@ export function BillingPage(): JSX.Element {
         </div>
       ) : (
         <div style={{ display: 'grid', gap: space[5] }}>
-          <CurrentPlan data={data} />
-          <PlanCatalog plans={plans} currentPlanId={data.entitlements.planId} />
+          <CurrentPlan
+            data={data}
+            canManage={canManage}
+            portalBusy={busy === 'portal'}
+            onPortal={onPortal}
+          />
+          <PlanCatalog
+            plans={plans}
+            currentPlanId={data.entitlements.planId}
+            canManage={canManage}
+            busy={busy}
+            onCheckout={onCheckout}
+          />
         </div>
       )}
     </>
@@ -94,7 +136,12 @@ function StatusPill({ status }: { readonly status: string }): JSX.Element {
   return <span className={`lc-badge lc-badge--${s.tone}`} role="status">{s.label}</span>;
 }
 
-function CurrentPlan({ data }: { readonly data: TenantBilling }): JSX.Element {
+function CurrentPlan({ data, canManage, portalBusy, onPortal }: {
+  readonly data: TenantBilling;
+  readonly canManage: boolean;
+  readonly portalBusy: boolean;
+  readonly onPortal: () => Promise<void>;
+}): JSX.Element {
   const { entitlements: e, subscription } = data;
   const rows: ReadonlyArray<readonly [string, React.ReactNode]> = [
     ['Plan', <strong key="p">{e.planName}</strong>],
@@ -103,6 +150,9 @@ function CurrentPlan({ data }: { readonly data: TenantBilling }): JSX.Element {
     ['Features', e.features.length === 0 ? 'Core connectivity' : e.features.join(', ')],
     ['Renews', fmtDate(e.currentPeriodEnd)],
   ];
+  // The portal manages an existing paid subscription; there's nothing to manage
+  // on the default Trial (no provider customer yet).
+  const hasSubscription = subscription !== null;
 
   return (
     <section style={{ display: 'grid', gap: space[3] }}>
@@ -126,25 +176,38 @@ function CurrentPlan({ data }: { readonly data: TenantBilling }): JSX.Element {
             will return to the Trial allowance afterward.
           </p>
         )}
+        {canManage && hasSubscription && (
+          <div>
+            <Button variant="secondary" loading={portalBusy} onClick={() => void onPortal()}>
+              Manage billing
+            </Button>
+          </div>
+        )}
       </div>
     </section>
   );
 }
 
-function PlanCatalog({ plans, currentPlanId }: {
+function PlanCatalog({ plans, currentPlanId, canManage, busy, onCheckout }: {
   readonly plans: readonly BillingPlan[];
   readonly currentPlanId: string;
+  readonly canManage: boolean;
+  readonly busy: string | null;
+  readonly onCheckout: (planId: string) => Promise<void>;
 }): JSX.Element {
   return (
     <section style={{ display: 'grid', gap: space[3] }}>
       <h2 style={{ fontSize: fontSize.section, fontWeight: 600 }}>Plans</h2>
       <p style={{ margin: 0, color: color.fgMuted, fontSize: fontSize.body }}>
-        Plans differ by gateway allowance and features. To change plans, contact your LabConnect
-        representative — self-service checkout is coming soon.
+        Plans differ by gateway allowance and features. {canManage
+          ? 'Choose a plan to start checkout.'
+          : 'Ask an owner or billing administrator to change plans.'}
       </p>
       <div style={{ display: 'grid', gap: space[3], gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))' }}>
         {plans.map((p) => {
           const current = p.id === currentPlanId;
+          // Trial is the default fallback, not a purchasable plan.
+          const purchasable = canManage && !current && p.id !== 'trial';
           return (
             <div key={p.id} className="lc-card" style={{
               padding: space[4], display: 'grid', gap: space[2], alignContent: 'start',
@@ -160,6 +223,17 @@ function PlanCatalog({ plans, currentPlanId }: {
                   ? <li>Core connectivity</li>
                   : p.features.map((f) => <li key={f}>{f}</li>)}
               </ul>
+              {purchasable && (
+                <div style={{ marginTop: space[1] }}>
+                  <Button
+                    variant="secondary"
+                    loading={busy === `checkout-${p.id}`}
+                    onClick={() => void onCheckout(p.id)}
+                  >
+                    Choose {p.name}
+                  </Button>
+                </div>
+              )}
             </div>
           );
         })}

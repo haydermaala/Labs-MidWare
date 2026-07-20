@@ -140,6 +140,15 @@ public sealed class BillingService
         DateTimeOffset? currentPeriodEnd, bool cancelAtPeriodEnd)
     {
         using var db = _factory.CreateDbContext();
+        UpsertInto(db, tenantId, planId, status, providerCustomerId, providerSubscriptionId, currentPeriodEnd, cancelAtPeriodEnd);
+        db.SaveChanges();
+    }
+
+    private void UpsertInto(
+        AppDbContext db, string tenantId, string planId, string status,
+        string? providerCustomerId, string? providerSubscriptionId,
+        DateTimeOffset? currentPeriodEnd, bool cancelAtPeriodEnd)
+    {
         var sub = Find(db, tenantId);
         if (sub is null)
         {
@@ -154,6 +163,43 @@ public sealed class BillingService
         sub.CancelAtPeriodEnd = cancelAtPeriodEnd;
         sub.UpdatedAt = _clock.GetUtcNow();
         Audit(db, "billing.subscription_updated", tenantId, $"{planId}:{status}");
-        db.SaveChanges();
+    }
+
+    /// <summary>
+    /// Apply a verified provider webhook event exactly once. The event id is
+    /// recorded in billing_events (UNIQUE on ProviderEventId); a duplicate delivery
+    /// — whether seen before or racing a concurrent one — is a no-op. Returns true
+    /// when this call applied the event, false when it was a replay/duplicate.
+    /// </summary>
+    public bool TryApplyProviderEvent(ProviderSubscriptionEvent ev)
+    {
+        using var db = _factory.CreateDbContext();
+
+        // Fast path: an already-processed id is a replay — do nothing.
+        if (db.BillingEvents.Any(e => e.ProviderEventId == ev.EventId))
+        {
+            return false;
+        }
+
+        db.BillingEvents.Add(new BillingEventEntity
+        {
+            Id = Ids.New("evt"),
+            ProviderEventId = ev.EventId,
+            TenantId = ev.TenantId,
+            ReceivedAt = _clock.GetUtcNow(),
+        });
+        UpsertInto(db, ev.TenantId, ev.PlanId, ev.Status, ev.CustomerId, ev.SubscriptionId, ev.CurrentPeriodEnd, ev.CancelAtPeriodEnd);
+
+        try
+        {
+            db.SaveChanges();
+            return true;
+        }
+        catch (DbUpdateException)
+        {
+            // Lost a race on the unique ProviderEventId index — another delivery of
+            // the same event won. Idempotent by construction: treat as a no-op.
+            return false;
+        }
     }
 }

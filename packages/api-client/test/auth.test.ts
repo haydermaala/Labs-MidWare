@@ -8,6 +8,8 @@ import {
   acceptInvitation,
   billingPlans,
   tenantBilling,
+  startCheckout,
+  openBillingPortal,
   type AuthOptions,
 } from '../src/index';
 
@@ -95,5 +97,24 @@ describe('auth client', () => {
     const [url, init] = fetchImpl.mock.calls[0]! as unknown as [URL, RequestInit];
     expect(url.pathname).toBe('/api/tenants/ten_1/billing');
     expect((init.headers as Record<string, string>).Authorization).toBe('Bearer ses_abc');
+  });
+
+  it('startCheckout posts the plan and returns the redirect url', async () => {
+    const fetchImpl = mockFetch(200, { url: 'https://pay.example/checkout/abc' });
+    const url = await startCheckout({ ...session, fetchImpl }, 'ten_1', 'laboratory');
+    expect(url).toBe('https://pay.example/checkout/abc');
+    const [reqUrl, init] = fetchImpl.mock.calls[0]! as unknown as [URL, RequestInit];
+    expect(init.method).toBe('POST');
+    expect(reqUrl.pathname).toBe('/api/tenants/ten_1/billing/checkout');
+    expect(init.body).toBe(JSON.stringify({ planId: 'laboratory' }));
+  });
+
+  it('openBillingPortal posts and returns the portal url', async () => {
+    const fetchImpl = mockFetch(200, { url: 'https://pay.example/portal/xyz' });
+    const url = await openBillingPortal({ ...session, fetchImpl }, 'ten_1');
+    expect(url).toBe('https://pay.example/portal/xyz');
+    const [reqUrl, init] = fetchImpl.mock.calls[0]! as unknown as [URL, RequestInit];
+    expect(init.method).toBe('POST');
+    expect(reqUrl.pathname).toBe('/api/tenants/ten_1/billing/portal');
   });
 });
