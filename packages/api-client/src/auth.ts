@@ -164,3 +164,49 @@ export async function revokeAllSessions(opts: AuthOptions): Promise<number> {
   const raw = await json<{ revoked: number }>(opts, 'POST', '/api/auth/sessions/revoke-all');
   return raw.revoked;
 }
+
+// --- billing (Phase E) -----------------------------------------------------
+// Entitlement scope only; the catalog carries no prices (the pricing gate).
+
+/** A published plan tier. `gatewayQuota` of -1 means unlimited. */
+export interface BillingPlan {
+  readonly id: string;
+  readonly name: string;
+  readonly gatewayQuota: number;
+  readonly features: readonly string[];
+}
+
+/** Server-computed entitlements for the active tenant. */
+export interface Entitlements {
+  readonly planId: string;
+  readonly planName: string;
+  readonly status: string;
+  readonly gatewayQuota: number;
+  readonly features: readonly string[];
+  readonly currentPeriodEnd: string | null;
+  readonly cancelAtPeriodEnd: boolean;
+}
+
+/** A tenant's subscription view (never provider secrets or card data). */
+export interface SubscriptionView {
+  readonly planId: string;
+  readonly status: string;
+  readonly currentPeriodEnd: string | null;
+  readonly cancelAtPeriodEnd: boolean;
+}
+
+/** The tenant's entitlements plus its subscription (null before first checkout). */
+export interface TenantBilling {
+  readonly entitlements: Entitlements;
+  readonly subscription: SubscriptionView | null;
+}
+
+/** The public plan catalog (no prices). Anonymous — no session needed. */
+export function billingPlans(opts: AuthOptions): Promise<readonly BillingPlan[]> {
+  return json<BillingPlan[]>(opts, 'GET', '/api/billing/plans');
+}
+
+/** The active tenant's entitlements and subscription. Any member may read. */
+export function tenantBilling(opts: AuthOptions, tenantId: string): Promise<TenantBilling> {
+  return json<TenantBilling>(opts, 'GET', `/api/tenants/${tenantId}/billing`);
+}

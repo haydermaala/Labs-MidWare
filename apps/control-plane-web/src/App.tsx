@@ -14,6 +14,7 @@ import { AuditPage, DashboardPage, FleetPage } from './pages/Pages';
 import { SecurityPage } from './pages/SecurityPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PeoplePage } from './pages/PeoplePage';
+import { BillingPage } from './pages/BillingPage';
 import {
   DocsPage, LandingPage, LegalPage, PricingPage, SecurityPublicPage, StatusPage,
 } from './public/PublicPages';
@@ -51,6 +52,7 @@ function Router(): JSX.Element {
           <Route path="/people" element={<PeoplePage />} />
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/security" element={<SecurityPage />} />
+          <Route path="/billing" element={<BillingPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       ) : (

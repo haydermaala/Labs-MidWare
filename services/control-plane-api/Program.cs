@@ -50,6 +50,11 @@ else
 }
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<MembershipService>();
+builder.Services.AddSingleton<BillingService>();
+
+// Billing provider: Stripe when test-mode keys are configured (Phase E2),
+// otherwise a deterministic fake for dev/tests and unconfigured environments.
+builder.Services.AddSingleton<IBillingProvider, FakeBillingProvider>();
 
 // Email: Titan SMTP when configured (Smtp:Host), else a dev/test sink.
 if (!string.IsNullOrEmpty(builder.Configuration["Smtp:Host"]))
@@ -159,9 +164,21 @@ app.MapPost("/api/tenants/{tenantId}/reactivate", (string tenantId, IControlPlan
 });
 
 // Issue a short-lived, single-use bootstrap token an operator hands to a gateway.
-app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
+app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, BillingService billing, HttpRequest req) =>
 {
     if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageFleet)) return Results.Unauthorized();
+    // Entitlement enforced server-side: only active gateways count toward quota.
+    var activeGateways = store.GatewaysFor(tenantId).Count(g => g.Active);
+    if (!billing.CanAddGateway(tenantId, activeGateways))
+    {
+        var plan = billing.EntitlementsFor(tenantId);
+        return Results.Json(new
+        {
+            error = "gateway quota reached for the current plan",
+            planId = plan.PlanId,
+            gatewayQuota = plan.GatewayQuota,
+        }, statusCode: StatusCodes.Status402PaymentRequired);
+    }
     var token = store.IssueBootstrapToken(tenantId, TimeSpan.FromMinutes(15));
     return token is null ? Results.NotFound() : Results.Json(token);
 });
@@ -549,6 +566,29 @@ app.MapPost("/api/auth/reset-password", (ResetPasswordRequest body, AuthService 
         ? Results.NoContent()
         : Results.BadRequest(new { error = "invalid or expired link; request a new one" });
 }).RequireRateLimiting("login");
+
+// --- billing: plans + entitlements (Phase E1) ------------------------------
+// The plan catalog is public (no prices — entitlement scope only).
+app.MapGet("/api/billing/plans", () => Results.Json(Plans.All.Select(p => new
+{
+    id = p.Id,
+    name = p.Name,
+    gatewayQuota = p.GatewayQuota,
+    features = p.Features,
+})));
+
+// A tenant's current subscription + entitlements. Any member may read the plan
+// and entitlements (the gateway quota affects everyone); provider ids never
+// appear in this payload.
+app.MapGet("/api/tenants/{tenantId}/billing", (string tenantId, BillingService billing, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanView)) return Results.Unauthorized();
+    return Results.Json(new
+    {
+        entitlements = billing.EntitlementsFor(tenantId),
+        subscription = billing.SubscriptionFor(tenantId),
+    });
+});
 
 // --- gateway enrollment (bootstrap token is the credential) ----------------
 app.MapPost("/api/gateways/enroll", (EnrollRequest body, IControlPlaneStore store) =>

@@ -6,6 +6,8 @@ import {
   forgotPassword,
   myMemberships,
   acceptInvitation,
+  billingPlans,
+  tenantBilling,
   type AuthOptions,
 } from '../src/index';
 
@@ -64,5 +66,34 @@ describe('auth client', () => {
     await expect(acceptInvitation({ ...session, fetchImpl }, 'inv_x')).rejects.toMatchObject(
       { status: 400 } satisfies Partial<ApiError>,
     );
+  });
+
+  it('billingPlans reads the public catalog anonymously', async () => {
+    const fetchImpl = mockFetch(200, [
+      { id: 'trial', name: 'Trial', gatewayQuota: 2, features: [] },
+      { id: 'network', name: 'Network', gatewayQuota: -1, features: ['bidirectional', 'sso'] },
+    ]);
+    const plans = await billingPlans({ baseUrl: base, fetchImpl });
+    expect(plans.map((p) => p.id)).toEqual(['trial', 'network']);
+    const [url, init] = fetchImpl.mock.calls[0]! as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe('/api/billing/plans');
+    // Anonymous: no Authorization header is sent.
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+  });
+
+  it('tenantBilling requests the tenant billing view with the session token', async () => {
+    const fetchImpl = mockFetch(200, {
+      entitlements: {
+        planId: 'trial', planName: 'Trial', status: 'trialing', gatewayQuota: 2,
+        features: [], currentPeriodEnd: null, cancelAtPeriodEnd: false,
+      },
+      subscription: null,
+    });
+    const billing = await tenantBilling({ ...session, fetchImpl }, 'ten_1');
+    expect(billing.entitlements.planId).toBe('trial');
+    expect(billing.subscription).toBeNull();
+    const [url, init] = fetchImpl.mock.calls[0]! as unknown as [URL, RequestInit];
+    expect(url.pathname).toBe('/api/tenants/ten_1/billing');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer ses_abc');
   });
 });

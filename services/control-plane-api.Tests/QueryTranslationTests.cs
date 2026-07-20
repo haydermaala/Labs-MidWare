@@ -64,5 +64,13 @@ public sealed class QueryTranslationTests
             .Where(t => t.Id == "ten_1")
             .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
             .ToQueryString(), StringComparison.OrdinalIgnoreCase);
+
+        // Billing reads behind the entitlements/subscription endpoints.
+        Assert.Contains("subscriptions", db.Subscriptions.AsNoTracking()
+            .Where(s => s.TenantId == "ten_1")
+            .ToQueryString(), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("billing_events", db.BillingEvents.AsNoTracking()
+            .Where(b => b.ProviderEventId == "evt_1")
+            .ToQueryString(), StringComparison.OrdinalIgnoreCase);
     }
 }
