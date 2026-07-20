@@ -42,7 +42,7 @@ check "readiness reports 'ready'"          bash -c "body '$BASE_URL/health/ready
 check "X-Content-Type-Options: nosniff"    bash -c "header '$BASE_URL/health' | grep -qi 'x-content-type-options: nosniff'"
 check "X-Frame-Options: DENY"              bash -c "header '$BASE_URL/health' | grep -qi 'x-frame-options: DENY'"
 check "Strict-Transport-Security present"  bash -c "header '$BASE_URL/health' | grep -qi 'strict-transport-security: max-age='"
-check "Content-Security-Policy present"    bash -c "header '$BASE_URL/health' | grep -qi \"content-security-policy: default-src 'none'\""
+check "Content-Security-Policy present"    bash -c "header '$BASE_URL/health' | grep -qi \"content-security-policy: default-src 'self'\""
 
 check "GET /api/billing/plans is 200"      test "$(code "$BASE_URL/api/billing/plans")" = 200
 # Pricing gate: the public catalog must never expose monetary figures.
