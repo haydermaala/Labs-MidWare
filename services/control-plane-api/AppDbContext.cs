@@ -20,6 +20,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<RecoveryCodeEntity> RecoveryCodes => Set<RecoveryCodeEntity>();
     public DbSet<MembershipEntity> Memberships => Set<MembershipEntity>();
     public DbSet<InvitationEntity> Invitations => Set<InvitationEntity>();
+    public DbSet<SubscriptionEntity> Subscriptions => Set<SubscriptionEntity>();
+    public DbSet<BillingEventEntity> BillingEvents => Set<BillingEventEntity>();
     public DbSet<TenantEntity> Tenants => Set<TenantEntity>();
     public DbSet<GatewayEntity> Gateways => Set<GatewayEntity>();
     public DbSet<DeviceCredentialEntity> DeviceCredentials => Set<DeviceCredentialEntity>();
@@ -73,6 +75,22 @@ public sealed class AppDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TokenHash).IsUnique();
             e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<SubscriptionEntity>(e =>
+        {
+            e.ToTable("subscriptions");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId).IsUnique();
+        });
+
+        modelBuilder.Entity<BillingEventEntity>(e =>
+        {
+            e.ToTable("billing_events");
+            e.HasKey(x => x.Id);
+            // Provider event ids are globally unique; this index makes webhook
+            // processing idempotent (a duplicate delivery is a no-op).
+            e.HasIndex(x => x.ProviderEventId).IsUnique();
         });
 
         modelBuilder.Entity<TenantEntity>(e =>
@@ -193,6 +211,31 @@ public sealed class InvitationEntity
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? AcceptedAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
+}
+
+/// <summary>A tenant's subscription. Holds only provider ids and status — never
+/// card data. Exactly one row per tenant.</summary>
+public sealed class SubscriptionEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string PlanId { get; set; } = Plans.Trial;
+    public string Status { get; set; } = SubscriptionStatus.Trialing;
+    public string? ProviderCustomerId { get; set; }
+    public string? ProviderSubscriptionId { get; set; }
+    public DateTimeOffset? CurrentPeriodEnd { get; set; }
+    public bool CancelAtPeriodEnd { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
+/// <summary>A processed provider webhook event, kept for idempotency + audit.</summary>
+public sealed class BillingEventEntity
+{
+    public string Id { get; set; } = "";
+    public string ProviderEventId { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public DateTimeOffset ReceivedAt { get; set; }
 }
 
 /// <summary>A tenant row.</summary>

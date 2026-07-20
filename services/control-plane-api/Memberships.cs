@@ -44,6 +44,9 @@ public static class Roles
 
     /// <summary>Tenant lifecycle (deactivate/reactivate) stays with owners.</summary>
     public static bool CanManageTenant(string role) => role is Owner;
+
+    /// <summary>Manage billing: view invoices, change plan, open the billing portal.</summary>
+    public static bool CanManageBilling(string role) => role is Owner or BillingAdmin;
 }
 
 /// <summary>Public view of a membership.</summary>
