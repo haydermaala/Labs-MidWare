@@ -46,6 +46,13 @@ time = { version = "0.3", default-features = false, features = ["std", "serde-we
 rusqlite = { version = "0.40", features = ["bundled"] }
 # Ergonomic error enums.
 thiserror = "2"
+# Minimal blocking HTTP client for edge→control-plane calls (enroll, heartbeat,
+# config). native-tls (OS trust store) is chosen over the rustls default so the
+# dependency tree stays within deny.toml's permissive license allowlist (rustls'
+# `ring` carries a non-SPDX license the allowlist rejects). Blocking, no async
+# runtime — matches gatewayd's synchronous style.
+ureq = { version = "2", default-features = false, features = ["native-tls"] }
+native-tls = "0.2"
 # Internal crates referenced by path for the workspace.
 canonical-model    = { path = "crates/canonical-model" }
 transport-core     = { path = "crates/transport-core" }

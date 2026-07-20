@@ -6,6 +6,7 @@
 //! device, synthetic data only. Service/daemon packaging arrives in a later phase.
 #![forbid(unsafe_code)]
 
+mod cloud;
 mod outbound;
 mod pipeline;
 
@@ -16,7 +17,74 @@ fn main() {
         Some("--demo") => run_demo(),
         Some("--deliver-demo") => run_deliver_demo(),
         Some("--serve") => run_serve(),
+        Some("--connect") => run_connect(),
         _ => print_health(),
+    }
+}
+
+/// Enroll against the LabConnect control plane and send a heartbeat, so the
+/// gateway appears `online` in the cloud fleet. Enrollment identity persists in
+/// the edge store, so re-runs reuse the device credential (the bootstrap token
+/// is single-use). Configuration comes from the environment:
+///   LC_CONTROL_PLANE_URL      base URL (required, e.g. https://…up.railway.app)
+///   GATEWAYD_BOOTSTRAP_TOKEN  single-use enrollment token (required first run)
+///   GATEWAYD_STORE            edge db path (default: a temp file)
+///   GATEWAYD_NAME             gateway display name (default: "edge-gateway")
+/// Operational/synthetic only — this contacts no analyzer.
+fn run_connect() {
+    use cloud::{ensure_enrolled, ControlPlaneClient};
+    use durable_queue::Store;
+    use std::time::Duration;
+
+    let base = env_required("LC_CONTROL_PLANE_URL");
+    let token = std::env::var("GATEWAYD_BOOTSTRAP_TOKEN").unwrap_or_default();
+    let name = std::env::var("GATEWAYD_NAME").unwrap_or_else(|_| "edge-gateway".to_owned());
+    let store_path = std::env::var("GATEWAYD_STORE").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("gatewayd-cloud.db")
+            .to_string_lossy()
+            .into_owned()
+    });
+
+    let store = Store::open(&store_path).expect("open edge store");
+    let client = ControlPlaneClient::new(base, Duration::from_secs(20)).expect("tls setup");
+
+    let enrollment = ensure_enrolled(&store, &client, &token, &name).unwrap_or_else(|e| {
+        eprintln!("enrollment failed: {e}");
+        std::process::exit(1);
+    });
+    println!(
+        "enrolled gateway {} (tenant {})",
+        enrollment.gateway_id, enrollment.tenant_id
+    );
+
+    client
+        .heartbeat(&enrollment.gateway_id, &enrollment.device_credential)
+        .unwrap_or_else(|e| {
+            eprintln!("heartbeat failed: {e}");
+            std::process::exit(1);
+        });
+    println!("heartbeat ok — gateway is online in the cloud fleet");
+
+    // Pull any operator-published config (PHI-free; non-production settings only).
+    match client.fetch_config(&enrollment.gateway_id, &enrollment.device_credential) {
+        Ok(Some(cfg)) => println!(
+            "config v{} ({}) published {}: {}",
+            cfg.version, cfg.environment, cfg.published_at, cfg.settings_json
+        ),
+        Ok(None) => println!("no config published for this gateway yet"),
+        Err(e) => eprintln!("config fetch failed (non-fatal): {e}"),
+    }
+}
+
+/// Read a required environment variable or exit with a clear message.
+fn env_required(key: &str) -> String {
+    match std::env::var(key) {
+        Ok(v) if !v.is_empty() => v,
+        _ => {
+            eprintln!("{key} must be set");
+            std::process::exit(2);
+        }
     }
 }
 
