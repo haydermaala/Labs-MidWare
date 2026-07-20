@@ -47,3 +47,4 @@ secrets/
 # "Icon\r"; match it precisely instead.
 Icon
 
+*.env.local
