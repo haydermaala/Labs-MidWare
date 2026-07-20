@@ -202,3 +202,50 @@ describe('people administration', () => {
     expect(screen.queryByRole('button', { name: /send invitation/i })).toBeNull();
   });
 });
+
+describe('gateway onboarding', () => {
+  function signedIn(role: string, gateways: unknown[] = []) {
+    window.sessionStorage.setItem('lc.session', 'ses_test');
+    window.sessionStorage.setItem('lc.tenant', 'ten_1');
+    return stubFetch({
+      '/api/auth/me': [200, { id: 'usr_1', email: 'ops@lab.example', createdAt: '2026-01-01T00:00:00Z', emailVerified: true, active: true, mfaEnabled: false }],
+      '/api/me/memberships': [200, [{ tenantId: 'ten_1', tenantName: 'Riverside', role, tenantActive: true }]],
+      '/api/tenants/ten_1/gateways': [200, gateways],
+      '/api/tenants/ten_1/enrollment-tokens': [200, { token: 'sample-enrollment-token-not-real', expiresAt: '2099-01-01T00:15:00Z' }],
+    });
+  }
+
+  it('fleet managers get an Add gateway action', async () => {
+    vi.stubGlobal('fetch', signedIn('lab-admin'));
+    const { FleetPage } = await import('../src/pages/Pages');
+    const { unmount } = renderIn(<FleetPage />);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /add gateway/i }).length).toBeGreaterThan(0));
+    unmount();
+  });
+
+  it('viewers get no Add gateway action', async () => {
+    window.sessionStorage.clear();
+    vi.stubGlobal('fetch', signedIn('technician'));
+    const { FleetPage } = await import('../src/pages/Pages');
+    renderIn(<FleetPage />);
+    await waitFor(() => expect(screen.getByText(/no gateways enrolled/i)).toBeTruthy());
+    expect(screen.queryAllByRole('button', { name: /add gateway/i })).toHaveLength(0);
+  });
+
+  it('issuing a token reveals it once as a copyable, single-use secret', async () => {
+    vi.stubGlobal('fetch', signedIn('owner'));
+    const { OnboardDrawer } = await import('../src/pages/OnboardDrawer');
+    renderIn(<OnboardDrawer open onClose={() => {}} onEnrolled={() => {}} />);
+
+    // The drawer is a labelled modal dialog with a step to issue the token.
+    expect(screen.getByRole('dialog', { name: /add a gateway/i })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /issue enrollment token/i }));
+
+    await waitFor(() => expect(screen.getByDisplayValue('sample-enrollment-token-not-real')).toBeTruthy());
+    // Single-use warning is announced, and the token field is read-only.
+    expect(screen.getByText(/cannot be shown again/i)).toBeTruthy();
+    expect((screen.getByDisplayValue('sample-enrollment-token-not-real') as HTMLInputElement).readOnly).toBe(true);
+    // The control-plane address is offered for the gateway setup.
+    expect(screen.getByDisplayValue(/localhost|railway|http/i)).toBeTruthy();
+  });
+});
