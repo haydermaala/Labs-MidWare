@@ -333,11 +333,61 @@ app.MapPost("/api/admin/users", (SignupRequest body, AuthService auth, HttpReque
 
 app.MapPost("/api/auth/login", (LoginRequest body, AuthService auth, HttpResponse res) =>
 {
-    var result = auth.Login(body.Email, body.Password);
-    if (result is null)
+    var outcome = auth.Login(body.Email, body.Password);
+    if (outcome is null)
     {
         return Results.Unauthorized();
     }
+    if (outcome.MfaRequired)
+    {
+        return Results.Json(new { mfaRequired = true, mfaToken = outcome.MfaToken });
+    }
+    SetSessionCookie(res, outcome.Session!.SessionToken, outcome.Session.ExpiresAt);
+    return Results.Json(outcome.Session);
+}).RequireRateLimiting("login");
+
+// --- MFA: enrollment + challenge completion (Phase C4) ----------------------
+app.MapPost("/api/auth/mfa/setup", (AuthService auth, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null) return Results.Unauthorized();
+    var setup = auth.SetupMfa(current.Value.User.Id);
+    return setup is null
+        ? Results.BadRequest(new { error = "MFA is already enabled" })
+        : Results.Json(setup);
+});
+
+app.MapPost("/api/auth/mfa/enable", (MfaCodeRequest body, AuthService auth, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null) return Results.Unauthorized();
+    var codes = auth.EnableMfa(current.Value.User.Id, body.Code);
+    return codes is null
+        ? Results.BadRequest(new { error = "run setup first and enter a current code" })
+        : Results.Json(new { recoveryCodes = codes });
+});
+
+app.MapPost("/api/auth/mfa/disable", (MfaCodeRequest body, AuthService auth, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null) return Results.Unauthorized();
+    return auth.DisableMfa(current.Value.User.Id, body.Code)
+        ? Results.NoContent()
+        : Results.BadRequest(new { error = "a current code is required to disable MFA" });
+});
+
+app.MapPost("/api/auth/mfa/verify", (MfaVerifyRequest body, AuthService auth, HttpResponse res) =>
+{
+    var result = auth.VerifyMfaLogin(body.MfaToken, body.Code);
+    if (result is null) return Results.Unauthorized();
+    SetSessionCookie(res, result.SessionToken, result.ExpiresAt);
+    return Results.Json(result);
+}).RequireRateLimiting("login");
+
+app.MapPost("/api/auth/mfa/recover", (MfaRecoverRequest body, AuthService auth, HttpResponse res) =>
+{
+    var result = auth.RecoverMfaLogin(body.MfaToken, body.RecoveryCode);
+    if (result is null) return Results.Unauthorized();
     SetSessionCookie(res, result.SessionToken, result.ExpiresAt);
     return Results.Json(result);
 }).RequireRateLimiting("login");
@@ -494,6 +544,15 @@ internal sealed record GrantMembershipRequest(string UserId, string TenantId, st
 
 /// <summary>Invite a user into a tenant with a role.</summary>
 internal sealed record InviteRequest(string Email, string Role);
+
+/// <summary>A TOTP code for enabling/disabling MFA.</summary>
+internal sealed record MfaCodeRequest(string Code);
+
+/// <summary>Completes an MFA login challenge with a TOTP code.</summary>
+internal sealed record MfaVerifyRequest(string MfaToken, string Code);
+
+/// <summary>Completes an MFA login challenge with a recovery code.</summary>
+internal sealed record MfaRecoverRequest(string MfaToken, string RecoveryCode);
 
 // Exposed so integration tests can host the app via WebApplicationFactory.
 public partial class Program;
