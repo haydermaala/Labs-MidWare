@@ -49,6 +49,7 @@ else
     builder.Services.AddSingleton<IControlPlaneStore, InMemoryControlPlaneStore>();
 }
 builder.Services.AddSingleton<AuthService>();
+builder.Services.AddSingleton<MembershipService>();
 
 // Email: Titan SMTP when configured (Smtp:Host), else a dev/test sink.
 if (!string.IsNullOrEmpty(builder.Configuration["Smtp:Host"]))
@@ -123,58 +124,125 @@ app.MapGet("/api/tenants", (IControlPlaneStore store, HttpRequest req) =>
     IsAdmin(req) ? Results.Json(store.Tenants()) : Results.Unauthorized());
 
 // Deactivate a tenant (soft): stops new enrollment; data and audit retained.
-app.MapPost("/api/tenants/{tenantId}/deactivate", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+app.MapPost("/api/tenants/{tenantId}/deactivate", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageTenant)) return Results.Unauthorized();
     return store.DeactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
 });
 
 // Reactivate a previously deactivated tenant.
-app.MapPost("/api/tenants/{tenantId}/reactivate", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+app.MapPost("/api/tenants/{tenantId}/reactivate", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageTenant)) return Results.Unauthorized();
     return store.ReactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
 });
 
 // Issue a short-lived, single-use bootstrap token an operator hands to a gateway.
-app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageFleet)) return Results.Unauthorized();
     var token = store.IssueBootstrapToken(tenantId, TimeSpan.FromMinutes(15));
     return token is null ? Results.NotFound() : Results.Json(token);
 });
 
 // Tenant-scoped gateway inventory (never returns another tenant's gateways).
-app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanView)) return Results.Unauthorized();
     if (!store.TenantExists(tenantId)) return Results.NotFound();
     return Results.Json(store.GatewaysFor(tenantId));
 });
 
 // Decommission a gateway within a tenant: mark inactive and revoke its credential.
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/decommission",
-    (string tenantId, string gatewayId, IControlPlaneStore store, HttpRequest req) =>
+    (string tenantId, string gatewayId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageFleet)) return Results.Unauthorized();
     return store.DecommissionGateway(tenantId, gatewayId) ? Results.NoContent() : Results.NotFound();
 });
 
 // Publish a (non-production) config version for a tenant's gateway.
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
-    (string tenantId, string gatewayId, JsonElement settings, IControlPlaneStore store, HttpRequest req) =>
+    (string tenantId, string gatewayId, JsonElement settings, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageFleet)) return Results.Unauthorized();
     var view = store.PublishConfig(tenantId, gatewayId, settings.GetRawText());
     return view is null ? Results.NotFound() : Results.Json(view);
 });
 
-// Tenant audit log (admin).
-app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, IControlPlaneStore store, HttpRequest req) =>
+// Tenant audit log (any member role; platform admin).
+app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanView)) return Results.Unauthorized();
     if (!store.TenantExists(tenantId)) return Results.NotFound();
     return Results.Json(store.AuditFor(tenantId));
+});
+
+// --- memberships + invitations (Phase C3) ----------------------------------
+app.MapGet("/api/me/memberships", (AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    return current is null
+        ? Results.Unauthorized()
+        : Results.Json(members.MembershipsFor(current.Value.User.Id));
+});
+
+// Platform-admin bootstrap: grant a membership directly (first owner of a tenant).
+app.MapPost("/api/admin/memberships", (GrantMembershipRequest body, MembershipService members, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    return members.Grant(body.UserId, body.TenantId, body.Role)
+        ? Results.NoContent()
+        : Results.BadRequest(new { error = "unknown user, tenant, or role" });
+});
+
+app.MapGet("/api/tenants/{tenantId}/members", (string tenantId, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    return Results.Json(members.MembersOf(tenantId));
+});
+
+app.MapPost("/api/tenants/{tenantId}/invitations",
+    async (string tenantId, InviteRequest body, AuthService auth, MembershipService members, IEmailSender mail, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    var byUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var created = members.Invite(tenantId, body.Email, body.Role, byUserId);
+    if (created is null)
+    {
+        return Results.BadRequest(new { error = "valid email and a known role are required" });
+    }
+    await mail.SendAsync(EmailTemplates.Invitation(
+        created.View.Email, created.TenantName, created.View.Role,
+        Link("/invite", created.Token)));
+    return Results.Created($"/api/tenants/{tenantId}/invitations/{created.View.Id}", created.View);
+}).RequireRateLimiting("login");
+
+app.MapGet("/api/tenants/{tenantId}/invitations", (string tenantId, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    return Results.Json(members.InvitationsFor(tenantId));
+});
+
+app.MapPost("/api/tenants/{tenantId}/invitations/{invitationId}/revoke",
+    (string tenantId, string invitationId, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    return members.RevokeInvitation(tenantId, invitationId) ? Results.NoContent() : Results.NotFound();
+});
+
+// Accept as the signed-in user; the invitation email must match the account.
+app.MapPost("/api/invitations/accept", (TokenRequest body, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    var membership = members.Accept(body.Token, current.Value.User.Id);
+    return membership is null
+        ? Results.BadRequest(new { error = "invalid, expired, or mismatched invitation" })
+        : Results.Json(membership);
 });
 
 // --- identity: users + sessions (Phase C1) ---------------------------------
@@ -194,6 +262,25 @@ app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, IControlPlaneStore
         token = cookie;
     }
     return token is null ? null : auth.Authenticate(token);
+}
+
+// Tenant-scoped authorization: the platform admin token passes everything;
+// otherwise the session user's membership role in THAT tenant must satisfy the
+// capability. Checked server-side on every tenant operation (no client claims).
+bool AuthorizedInTenant(HttpRequest req, AuthService auth, MembershipService members,
+    string tenantId, Func<string, bool> capability)
+{
+    if (IsAdmin(req))
+    {
+        return true;
+    }
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return false;
+    }
+    var role = members.RoleIn(current.Value.User.Id, tenantId);
+    return role is not null && capability(role);
 }
 
 void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>
@@ -401,6 +488,12 @@ internal sealed record ForgotPasswordRequest(string Email);
 
 /// <summary>Completes a password reset.</summary>
 internal sealed record ResetPasswordRequest(string Token, string NewPassword);
+
+/// <summary>Platform-admin membership grant (tenant bootstrap).</summary>
+internal sealed record GrantMembershipRequest(string UserId, string TenantId, string Role);
+
+/// <summary>Invite a user into a tenant with a role.</summary>
+internal sealed record InviteRequest(string Email, string Role);
 
 // Exposed so integration tests can host the app via WebApplicationFactory.
 public partial class Program;
