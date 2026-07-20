@@ -22,4 +22,10 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Lets the test project reach internal query builders for the
+         provider-translation guard (QueryTranslationTests). -->
+    <InternalsVisibleTo Include="ControlPlane.Api.Tests" />
+  </ItemGroup>
+
 </Project>

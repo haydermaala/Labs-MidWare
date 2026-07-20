@@ -8,6 +8,7 @@ import { SignInPage } from './auth/SignInPage';
 import { AcceptInvitePage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './auth/TokenPages';
 import { AppShell } from './shell/AppShell';
 import { AuditPage, DashboardPage, FleetPage, SecurityPage } from './pages/Pages';
+import { PeoplePage } from './pages/PeoplePage';
 
 function RequireSession(): JSX.Element {
   const { status } = useAuth();
@@ -41,6 +42,7 @@ export function App(): JSX.Element {
           <Route element={<RequireSession />}>
             <Route index element={<DashboardPage />} />
             <Route path="/fleet" element={<FleetPage />} />
+            <Route path="/people" element={<PeoplePage />} />
             <Route path="/audit" element={<AuditPage />} />
             <Route path="/security" element={<SecurityPage />} />
           </Route>

@@ -151,3 +151,87 @@ export function getAudit(
     `/api/tenants/${encodeURIComponent(tenantId)}/audit`,
   );
 }
+
+/** A member of a tenant (admin view). */
+export interface Member {
+  readonly userId: string;
+  readonly email: string;
+  readonly role: string;
+  readonly since: string;
+  readonly active: boolean;
+}
+
+/** Members of a tenant (requires user-management permission). */
+export function listMembers(
+  opts: ControlPlaneOptions,
+  tenantId: string,
+): Promise<readonly Member[]> {
+  return requestJson<Member[]>(opts, 'GET', `/api/tenants/${encodeURIComponent(tenantId)}/members`);
+}
+
+/** Change a member's role. Owner grants/revocations require an owner actor. */
+export async function changeMemberRole(
+  opts: ControlPlaneOptions,
+  tenantId: string,
+  userId: string,
+  role: string,
+): Promise<void> {
+  await request(
+    opts, 'POST',
+    `/api/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/role`,
+    { role },
+  );
+}
+
+/** Remove a member (soft: membership deactivated, history retained). */
+export async function removeMember(
+  opts: ControlPlaneOptions,
+  tenantId: string,
+  userId: string,
+): Promise<void> {
+  await request(
+    opts, 'POST',
+    `/api/tenants/${encodeURIComponent(tenantId)}/members/${encodeURIComponent(userId)}/remove`,
+  );
+}
+
+/** Invite a user into a tenant with a role. */
+export function inviteMember(
+  opts: ControlPlaneOptions,
+  tenantId: string,
+  email: string,
+  role: string,
+): Promise<InvitationView> {
+  return requestJson<InvitationView>(
+    opts, 'POST', `/api/tenants/${encodeURIComponent(tenantId)}/invitations`, { email, role });
+}
+
+/** Pending/handled invitations for a tenant. */
+export function listInvitations(
+  opts: ControlPlaneOptions,
+  tenantId: string,
+): Promise<readonly InvitationView[]> {
+  return requestJson<InvitationView[]>(
+    opts, 'GET', `/api/tenants/${encodeURIComponent(tenantId)}/invitations`);
+}
+
+/** Revoke a pending invitation. */
+export async function revokeInvitation(
+  opts: ControlPlaneOptions,
+  tenantId: string,
+  invitationId: string,
+): Promise<void> {
+  await request(
+    opts, 'POST',
+    `/api/tenants/${encodeURIComponent(tenantId)}/invitations/${encodeURIComponent(invitationId)}/revoke`,
+  );
+}
+
+/** An invitation as shown to administrators (never the token). */
+export interface InvitationView {
+  readonly id: string;
+  readonly email: string;
+  readonly role: string;
+  readonly expiresAt: string;
+  readonly status: 'pending' | 'accepted' | 'revoked' | 'expired';
+}
