@@ -3,8 +3,9 @@
 // configured; otherwise NullEmailSender keeps dev/tests email-free. Message
 // bodies carry only links/status — never passwords, PHI, or result data.
 
-using System.Net;
-using System.Net.Mail;
+using MailKit.Net.Smtp;
+using MailKit.Security;
+using MimeKit;
 
 namespace ControlPlane.Api;
 
@@ -34,9 +35,10 @@ public sealed partial class NullEmailSender : IEmailSender
     }
 }
 
-/// <summary>Standard SMTP sender (Titan). Config: Smtp:Host, Smtp:Port (587),
-/// Smtp:Username, Smtp:Password, Smtp:From. Credentials live only in the
-/// environment/secret store and are never returned by any endpoint.</summary>
+/// <summary>Standard SMTP sender via MailKit (Titan). Config: Smtp:Host,
+/// Smtp:Port (587 STARTTLS / 465 implicit TLS, auto-negotiated), Smtp:Username,
+/// Smtp:Password, Smtp:From. Credentials live only in the environment/secret
+/// store and are never returned by any endpoint or written to logs.</summary>
 public sealed class SmtpEmailSender : IEmailSender
 {
     private readonly IConfiguration _config;
@@ -48,18 +50,24 @@ public sealed class SmtpEmailSender : IEmailSender
         var port = int.TryParse(_config["Smtp:Port"], out var p) ? p : 587;
         var from = _config["Smtp:From"] ?? _config["Smtp:Username"]!;
 
-        using var message = new MailMessage(from, email.To, email.Subject, email.TextBody);
+        var message = new MimeMessage();
+        message.From.Add(MailboxAddress.Parse(from));
+        message.To.Add(MailboxAddress.Parse(email.To));
+        message.Subject = email.Subject;
+        var body = new BodyBuilder { TextBody = email.TextBody };
         if (email.HtmlBody is not null)
         {
-            message.AlternateViews.Add(AlternateView.CreateAlternateViewFromString(
-                email.HtmlBody, null, "text/html"));
+            body.HtmlBody = email.HtmlBody;
         }
-        using var client = new SmtpClient(host, port)
-        {
-            EnableSsl = true,
-            Credentials = new NetworkCredential(_config["Smtp:Username"], _config["Smtp:Password"]),
-        };
-        await client.SendMailAsync(message, ct);
+        message.Body = body.ToMessageBody();
+
+        using var client = new SmtpClient();
+        // 465 → implicit TLS; 587/25 → STARTTLS (required, never silently plain).
+        var security = port == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
+        await client.ConnectAsync(host, port, security, ct);
+        await client.AuthenticateAsync(_config["Smtp:Username"] ?? "", _config["Smtp:Password"] ?? "", ct);
+        await client.SendAsync(message, ct);
+        await client.DisconnectAsync(true, ct);
     }
 }
 
