@@ -255,10 +255,15 @@ app.MapPost("/api/tenants/{tenantId}/invitations",
     {
         return Results.BadRequest(new { error = "valid email and a known role are required" });
     }
-    await mail.SendAsync(EmailTemplates.Invitation(
-        created.View.Email, created.TenantName, created.View.Role,
-        Link("/invite", created.Token)));
-    return Results.Created($"/api/tenants/{tenantId}/invitations/{created.View.Id}", created.View);
+    // The invitation is already durable; delivery is reported, not fatal, so a
+    // mail outage does not leave the admin unsure whether it was created.
+    var delivered = await MailDelivery.TrySendAsync(mail,
+        EmailTemplates.Invitation(created.View.Email, created.TenantName, created.View.Role,
+            Link("/invite", created.Token)),
+        "invitation", app.Logger);
+    return Results.Created(
+        $"/api/tenants/{tenantId}/invitations/{created.View.Id}",
+        new InvitationCreatedResponse(created.View, delivered));
 }).RequireRateLimiting("login");
 
 app.MapGet("/api/tenants/{tenantId}/invitations", (string tenantId, AuthService auth, MembershipService members, HttpRequest req) =>
@@ -504,7 +509,11 @@ app.MapPost("/api/auth/forgot-password", async (ForgotPasswordRequest body, Auth
     var issued = auth.IssuePasswordReset(body.Email);
     if (issued is not null)
     {
-        await mail.SendAsync(EmailTemplates.ResetPassword(issued.Value.Email, Link("/reset-password", issued.Value.Token)));
+        // Best-effort: a send failure must not turn into a 500 here, or an
+        // existing account would be distinguishable from an unknown one.
+        await MailDelivery.TrySendAsync(mail,
+            EmailTemplates.ResetPassword(issued.Value.Email, Link("/reset-password", issued.Value.Token)),
+            "password-reset", app.Logger);
     }
     return Results.Accepted();
 }).RequireRateLimiting("login");
@@ -590,6 +599,9 @@ internal sealed record InviteRequest(string Email, string Role);
 
 /// <summary>Change an existing member's role.</summary>
 internal sealed record ChangeRoleRequest(string Role);
+
+/// <summary>A created invitation plus whether the provider accepted its email.</summary>
+internal sealed record InvitationCreatedResponse(InvitationView Invitation, bool EmailDelivered);
 
 /// <summary>A TOTP code for enabling/disabling MFA.</summary>
 internal sealed record MfaCodeRequest(string Code);
