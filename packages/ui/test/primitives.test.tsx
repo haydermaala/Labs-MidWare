@@ -13,7 +13,7 @@ describe('design system', () => {
 
   it('legacy tokens shape stays compatible', () => {
     expect(tokens.color.bg).toBeTruthy();
-    expect(tokens.space.length).toBe(7);
+    expect(tokens.space.length).toBe(9);
     expect(space[2]).toBe(8);
     expect(color.primary).toBe('var(--lc-primary)');
   });

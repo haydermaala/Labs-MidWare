@@ -54,11 +54,46 @@ function Skeleton({ rows = 3 }: { readonly rows?: number }): JSX.Element {
   return (
     <div aria-hidden="true" style={{ display: 'grid', gap: space[2] }}>
       {Array.from({ length: rows }, (_, i) => (
-        <div key={i} style={{ height: 36, borderRadius: 4, background: color.surface2 }} />
+        <div key={i} className="lc-skeleton" style={{ height: 44 }} />
       ))}
     </div>
   );
 }
+
+/** A composed empty state: icon, title, guidance, and an optional action. */
+export function EmptyState({ icon, title, children, action }: {
+  readonly icon: React.ReactNode;
+  readonly title: string;
+  readonly children: React.ReactNode;
+  readonly action?: React.ReactNode;
+}): JSX.Element {
+  return (
+    <div className="lc-empty">
+      <span className="lc-empty__icon" aria-hidden="true">{icon}</span>
+      <span className="lc-empty__title">{title}</span>
+      <span className="lc-empty__body">{children}</span>
+      {action}
+    </div>
+  );
+}
+
+/** Inline Lucide icon (24×24 stroke) for empty states and accents. */
+export function Glyph({ path, size = 22 }: { readonly path: string; readonly size?: number }): JSX.Element {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {path.split('|').map((d, i) => <path key={i} d={d} />)}
+    </svg>
+  );
+}
+
+/** A few shared Lucide path sets. */
+export const glyphs = {
+  server: 'M5 3h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z|M5 13h14a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4a2 2 0 0 1 2-2z|M6 7h.01|M6 17h.01',
+  users: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2|M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z|M22 21v-2a4 4 0 0 0-3-3.87|M16 3.13a4 4 0 0 1 0 7.75',
+  inbox: 'M22 12h-6l-2 3h-4l-2-3H2|M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
+  activity: 'M22 12h-4l-3 9L9 3l-3 9H2',
+} as const;
 
 /** Shared loader for tenant-scoped data with the full state matrix. */
 function useTenantData<T>(load: (token: string, tenantId: string) => Promise<T>): {
@@ -138,9 +173,9 @@ function Stat({ label, value, tone = 'muted' }: {
 }): JSX.Element {
   const valueColor = tone === 'ok' ? color.ok : tone === 'warn' ? color.warn : color.fg;
   return (
-    <div className="lc-card" style={{ padding: space[4], display: 'grid', gap: space[1] }}>
-      <span style={{ fontSize: fontSize.meta, color: color.fgMuted, fontWeight: 500 }}>{label}</span>
-      <span className="lc-tabular" style={{ fontSize: 28, fontWeight: 600, color: valueColor }}>{value}</span>
+    <div className="lc-stat">
+      <span className="lc-stat__label">{label}</span>
+      <span className="lc-stat__value" style={{ color: valueColor }}>{value}</span>
     </div>
   );
 }
@@ -181,12 +216,15 @@ export function FleetPage(): JSX.Element {
             : state === 'error' ? <Notice tone="error">Could not load gateways. Try again shortly.</Notice>
               : (data ?? []).length === 0
                 ? (
-                  <div className="lc-card" style={{ padding: space[5], display: 'grid', gap: space[3], justifyItems: 'start' }}>
-                    <p style={{ margin: 0, color: color.fgMuted }}>
-                      No gateways enrolled yet.{canManage ? ' Add the first one to connect an analyzer.' : ' An administrator can add the first one.'}
-                    </p>
-                    {canManage && <Button onClick={() => setOnboarding(true)}>Add gateway</Button>}
-                  </div>
+                  <EmptyState
+                    icon={<Glyph path={glyphs.server} />}
+                    title="No gateways enrolled yet"
+                    action={canManage ? <Button onClick={() => setOnboarding(true)}>Add gateway</Button> : undefined}
+                  >
+                    {canManage
+                      ? 'Add a gateway to connect an on-site analyzer. It captures output locally and reports here over a secure outbound channel.'
+                      : 'An administrator can add the first gateway to connect an analyzer.'}
+                  </EmptyState>
                 )
                 : <GatewayTable gateways={data ?? []} canManage={canManage} busyId={busyId} onDecommission={decommission} />}
     </>

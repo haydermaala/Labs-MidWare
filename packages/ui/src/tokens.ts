@@ -7,15 +7,21 @@ export const cssVar = {
   surface0: '--lc-surface-0',
   surface1: '--lc-surface-1',
   surface2: '--lc-surface-2',
+  surface3: '--lc-surface-3',
   border: '--lc-border',
+  borderStrong: '--lc-border-strong',
   fg: '--lc-fg',
   fgMuted: '--lc-fg-muted',
+  fgSubtle: '--lc-fg-subtle',
   primary: '--lc-primary',
+  primaryHover: '--lc-primary-hover',
   primaryFg: '--lc-primary-fg',
+  primarySoft: '--lc-primary-soft',
   ok: '--lc-ok',
   warn: '--lc-warn',
   danger: '--lc-danger',
   info: '--lc-info',
+  ring: '--lc-ring',
 } as const;
 
 /** var() references for use in styles. */
@@ -23,11 +29,18 @@ export const color = Object.fromEntries(
   Object.entries(cssVar).map(([k, v]) => [k, `var(${v})`]),
 ) as Record<keyof typeof cssVar, string>;
 
-/** Spacing scale (px) — DESIGN.md §4, density 8/10. */
-export const space = [0, 4, 8, 12, 16, 24, 32] as const;
+/** Elevation scale (references the theme's shadow custom properties). */
+export const shadow = {
+  sm: 'var(--lc-shadow-sm)',
+  md: 'var(--lc-shadow-md)',
+  lg: 'var(--lc-shadow-lg)',
+} as const;
 
-/** Radii: controls 4, cards/drawers 6, pills 999. Nothing larger. */
-export const radius = { control: 4, card: 6, pill: 999 } as const;
+/** Spacing scale (px). */
+export const space = [0, 4, 8, 12, 16, 24, 32, 48, 64] as const;
+
+/** Radii: controls 8, cards/drawers 12, pills 999. Softer, more modern. */
+export const radius = { control: 8, card: 12, pill: 999 } as const;
 
 /** Type scale (px) — DESIGN.md §3. */
 export const fontSize = {
