@@ -34,6 +34,9 @@ builder.Services.AddCors(options => options.AddDefaultPolicy(policy =>
         .WithHeaders("Authorization", "Content-Type")
         .WithMethods("GET", "POST")));
 
+// The application database backs identity (always) and the fleet store (when
+// Postgres is configured). Without DATABASE_URL, the EF in-memory provider keeps
+// local/dev/tests database-free while auth still exercises the same code path.
 var postgres = DatabaseConfig.ResolveConnectionString(builder.Configuration);
 if (postgres is not null)
 {
@@ -42,8 +45,30 @@ if (postgres is not null)
 }
 else
 {
+    builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseInMemoryDatabase("labconnect-dev"));
     builder.Services.AddSingleton<IControlPlaneStore, InMemoryControlPlaneStore>();
 }
+builder.Services.AddSingleton<AuthService>();
+
+// Credential-guessing defenses: a tight per-IP fixed window on login attempts.
+// ControlPlane:LoginRatePermit overrides the default (ops tuning + tests); it is
+// resolved per request from live configuration, like the CORS allowlist.
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.AddPolicy("login", ctx =>
+    {
+        var config = ctx.RequestServices.GetRequiredService<IConfiguration>();
+        var permit = int.TryParse(config["ControlPlane:LoginRatePermit"], out var p) ? p : 10;
+        return System.Threading.RateLimiting.RateLimitPartition.GetFixedWindowLimiter(
+            ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new System.Threading.RateLimiting.FixedWindowRateLimiterOptions
+            {
+                PermitLimit = permit,
+                Window = TimeSpan.FromMinutes(1),
+            });
+    });
+});
 
 var app = builder.Build();
 
@@ -62,6 +87,7 @@ if (postgres is not null)
 }
 
 app.UseCors();
+app.UseRateLimiter();
 
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];
@@ -141,6 +167,122 @@ app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, IControlPlaneStore
     return Results.Json(store.AuditFor(tenantId));
 });
 
+// --- identity: users + sessions (Phase C1) ---------------------------------
+// Session resolution: `Authorization: Bearer ses_…` (SPA) or the `lc_session`
+// HttpOnly cookie (same-site browser use). Cookie hardening to __Host- prefix +
+// CSRF double-submit lands when the web app is served same-origin (Phase H).
+(UserView User, string SessionId)? CurrentUser(HttpRequest req, AuthService auth)
+{
+    var header = req.Headers.Authorization.ToString();
+    string? token = null;
+    if (header.StartsWith("Bearer ses_", StringComparison.Ordinal))
+    {
+        token = header["Bearer ".Length..];
+    }
+    else if (req.Cookies.TryGetValue("lc_session", out var cookie))
+    {
+        token = cookie;
+    }
+    return token is null ? null : auth.Authenticate(token);
+}
+
+void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>
+    res.Cookies.Append("lc_session", token, new CookieOptions
+    {
+        HttpOnly = true,
+        Secure = true,
+        SameSite = SameSiteMode.Lax,
+        Expires = expires,
+        Path = "/",
+    });
+
+// Self-service signup is a business-policy gate, disabled unless configured.
+app.MapPost("/api/auth/signup", (SignupRequest body, AuthService auth) =>
+{
+    if (!string.Equals(app.Configuration["ControlPlane:AllowSignup"], "true", StringComparison.OrdinalIgnoreCase))
+    {
+        return Results.NotFound();
+    }
+    if (!AuthService.LooksLikeEmail(body.Email))
+    {
+        return Results.BadRequest(new { error = "a valid email address is required" });
+    }
+    if (!AuthService.PasswordAcceptable(body.Password))
+    {
+        return Results.BadRequest(new { error = "password must be 12 to 256 characters" });
+    }
+    var user = auth.CreateUser(body.Email, body.Password);
+    // Generic response either way: no account-existence oracle.
+    return user is null ? Results.Ok(new { status = "ok" }) : Results.Ok(new { status = "ok" });
+}).RequireRateLimiting("login");
+
+// Platform admin creates users while self-service signup is disabled.
+app.MapPost("/api/admin/users", (SignupRequest body, AuthService auth, HttpRequest req) =>
+{
+    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!AuthService.LooksLikeEmail(body.Email))
+    {
+        return Results.BadRequest(new { error = "a valid email address is required" });
+    }
+    if (!AuthService.PasswordAcceptable(body.Password))
+    {
+        return Results.BadRequest(new { error = "password must be 12 to 256 characters" });
+    }
+    var user = auth.CreateUser(body.Email, body.Password);
+    return user is null
+        ? Results.Conflict(new { error = "email is already registered" })
+        : Results.Created($"/api/admin/users/{user.Id}", user);
+});
+
+app.MapPost("/api/auth/login", (LoginRequest body, AuthService auth, HttpResponse res) =>
+{
+    var result = auth.Login(body.Email, body.Password);
+    if (result is null)
+    {
+        return Results.Unauthorized();
+    }
+    SetSessionCookie(res, result.SessionToken, result.ExpiresAt);
+    return Results.Json(result);
+}).RequireRateLimiting("login");
+
+app.MapGet("/api/auth/me", (AuthService auth, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    return current is null ? Results.Unauthorized() : Results.Json(current.Value.User);
+});
+
+app.MapPost("/api/auth/logout", (AuthService auth, HttpRequest req, HttpResponse res) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    auth.RevokeSession(current.Value.User.Id, current.Value.SessionId);
+    res.Cookies.Delete("lc_session");
+    return Results.NoContent();
+});
+
+app.MapGet("/api/auth/sessions", (AuthService auth, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    return current is null
+        ? Results.Unauthorized()
+        : Results.Json(auth.SessionsFor(current.Value.User.Id, current.Value.SessionId));
+});
+
+app.MapPost("/api/auth/sessions/revoke-all", (AuthService auth, HttpRequest req, HttpResponse res) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    var count = auth.RevokeAllSessions(current.Value.User.Id);
+    res.Cookies.Delete("lc_session");
+    return Results.Json(new { revoked = count });
+});
+
 // --- gateway enrollment (bootstrap token is the credential) ----------------
 app.MapPost("/api/gateways/enroll", (EnrollRequest body, IControlPlaneStore store) =>
 {
@@ -187,6 +329,12 @@ internal sealed record CreateTenantRequest(string Name);
 
 /// <summary>Request to enroll a gateway using a bootstrap token.</summary>
 internal sealed record EnrollRequest(string BootstrapToken, string? Name);
+
+/// <summary>Request to create a user account.</summary>
+internal sealed record SignupRequest(string Email, string Password);
+
+/// <summary>Login request.</summary>
+internal sealed record LoginRequest(string Email, string Password);
 
 // Exposed so integration tests can host the app via WebApplicationFactory.
 public partial class Program;
