@@ -86,3 +86,6 @@ export function getRecentMessages(
 
 // Control-plane (fleet management) client.
 export * from './control-plane';
+
+// Identity (auth/session/MFA/membership) client.
+export * from './auth';
