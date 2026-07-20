@@ -67,3 +67,46 @@ jobs:
             dist/lab-simulator
             dist/sbom.spdx.json
             dist/SHA256SUMS
+
+  # Unsigned DEVELOPMENT installers for the technician desktop app. Bundling is
+  # per-OS, so this fans out over macOS + Windows runners. Signing/notarization
+  # is a human gate (needs your identities) — see
+  # docs/operations/desktop-packaging.md. Until those secrets exist, the
+  # artifacts are unsigned dev builds and will trip Gatekeeper/SmartScreen.
+  desktop-installers:
+    name: Desktop installers (${{ matrix.os }}) — unsigned dev
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned Rust toolchain
+        run: rustup show
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/gateway-desktop/src-tauri
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Builds the frontend + src-tauri (release) and bundles the OS installer,
+      # then uploads it to the release for this tag. No signing secrets are set,
+      # so the output is an unsigned development build.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/gateway-desktop
+          tauriScript: pnpm tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: ${{ github.ref_name }}
+          args: ${{ matrix.os == 'macos-latest' && '--bundles app,dmg' || '--bundles msi' }}
