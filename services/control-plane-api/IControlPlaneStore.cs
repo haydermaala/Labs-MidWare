@@ -18,6 +18,12 @@ public interface IControlPlaneStore
     /// <summary>Whether a tenant exists (active or deactivated).</summary>
     bool TenantExists(string tenantId);
 
+    /// <summary>Find one tenant by id (active or deactivated), or null.</summary>
+    Tenant? FindTenant(string tenantId);
+
+    /// <summary>Rename a tenant. Returns the updated tenant, or null if unknown.</summary>
+    Tenant? RenameTenant(string tenantId, string name);
+
     /// <summary>
     /// Deactivate a tenant (soft): it stops issuing enrollment tokens and enrolling
     /// gateways, but its gateways, config, and audit trail are retained. No-op if

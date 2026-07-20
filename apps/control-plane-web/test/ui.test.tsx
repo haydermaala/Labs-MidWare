@@ -319,3 +319,54 @@ describe('security settings', () => {
     expect(screen.getByRole('button', { name: /sign out everywhere/i })).toBeTruthy();
   });
 });
+
+describe('tenant settings', () => {
+  function signedIn(role: string, tenant = { id: 'ten_1', name: 'Riverside Diagnostics', createdAt: '2026-01-01T00:00:00Z', active: true }) {
+    window.sessionStorage.setItem('lc.session', 'ses_test');
+    window.sessionStorage.setItem('lc.tenant', 'ten_1');
+    return stubFetch({
+      '/api/auth/me': [200, { id: 'usr_1', email: 'ops@lab.example', createdAt: '2026-01-01T00:00:00Z', emailVerified: true, active: true, mfaEnabled: false }],
+      '/api/me/memberships': [200, [{ tenantId: 'ten_1', tenantName: tenant.name, role, tenantActive: tenant.active }]],
+      '/api/tenants/ten_1/settings': [200, tenant],
+    });
+  }
+
+  it('owner can edit the name and sees the danger zone', async () => {
+    vi.stubGlobal('fetch', signedIn('owner'));
+    const { SettingsPage } = await import('../src/pages/SettingsPage');
+    renderIn(<SettingsPage />);
+
+    const nameInput = await screen.findByLabelText('Laboratory name') as HTMLInputElement;
+    expect(nameInput.disabled).toBe(false);
+    expect(nameInput.value).toBe('Riverside Diagnostics');
+    expect(screen.getByText('ten_1')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: /deactivate laboratory/i })).toBeTruthy();
+  });
+
+  it('non-owners see a read-only name and no danger zone', async () => {
+    vi.stubGlobal('fetch', signedIn('technician'));
+    const { SettingsPage } = await import('../src/pages/SettingsPage');
+    renderIn(<SettingsPage />);
+
+    const nameInput = await screen.findByLabelText('Laboratory name') as HTMLInputElement;
+    expect(nameInput.disabled).toBe(true);
+    expect(screen.getByText(/only an owner can rename/i)).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: /deactivate laboratory/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /save changes/i })).toBeNull();
+  });
+
+  it('deactivation requires typing the exact laboratory name', async () => {
+    vi.stubGlobal('fetch', signedIn('owner'));
+    const { SettingsPage } = await import('../src/pages/SettingsPage');
+    renderIn(<SettingsPage />);
+
+    await screen.findByLabelText('Laboratory name');
+    const deactivate = screen.getByRole('button', { name: /^deactivate laboratory$/i }) as HTMLButtonElement;
+    expect(deactivate.disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText(/type the laboratory name to confirm/i), { target: { value: 'wrong' } });
+    expect(deactivate.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText(/type the laboratory name to confirm/i), { target: { value: 'Riverside Diagnostics' } });
+    expect(deactivate.disabled).toBe(false);
+  });
+});

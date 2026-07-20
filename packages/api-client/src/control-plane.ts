@@ -242,3 +242,13 @@ export interface InvitationView {
   readonly expiresAt: string;
   readonly status: 'pending' | 'accepted' | 'revoked' | 'expired';
 }
+
+/** Read a tenant's general settings (any member). */
+export function getTenantSettings(opts: ControlPlaneOptions, tenantId: string): Promise<Tenant> {
+  return requestJson<Tenant>(opts, 'GET', `/api/tenants/${encodeURIComponent(tenantId)}/settings`);
+}
+
+/** Rename a tenant (owner only). */
+export function renameTenant(opts: ControlPlaneOptions, tenantId: string, name: string): Promise<Tenant> {
+  return requestJson<Tenant>(opts, 'POST', `/api/tenants/${encodeURIComponent(tenantId)}/rename`, { name });
+}
