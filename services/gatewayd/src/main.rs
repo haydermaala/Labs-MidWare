@@ -22,17 +22,19 @@ fn main() {
     }
 }
 
-/// Enroll against the LabConnect control plane and send a heartbeat, so the
-/// gateway appears `online` in the cloud fleet. Enrollment identity persists in
-/// the edge store, so re-runs reuse the device credential (the bootstrap token
-/// is single-use). Configuration comes from the environment:
+/// Enroll against the LabConnect control plane, then report liveness and PHI-free
+/// telemetry so the gateway appears `online` in the cloud fleet with its message
+/// counts. Enrollment identity persists in the edge store, so re-runs reuse the
+/// device credential (the bootstrap token is single-use). Configuration comes
+/// from the environment:
 ///   LC_CONTROL_PLANE_URL      base URL (required, e.g. https://…up.railway.app)
 ///   GATEWAYD_BOOTSTRAP_TOKEN  single-use enrollment token (required first run)
 ///   GATEWAYD_STORE            edge db path (default: a temp file)
 ///   GATEWAYD_NAME             gateway display name (default: "edge-gateway")
-/// Operational/synthetic only — this contacts no analyzer.
+///   GATEWAYD_SIM_SESSIONS     synthetic ASTM sessions to ingest first (default 0)
+/// Synthetic only — this contacts no analyzer and reports no message content.
 fn run_connect() {
-    use cloud::{ensure_enrolled, ControlPlaneClient};
+    use cloud::{ensure_enrolled, ControlPlaneClient, Telemetry};
     use durable_queue::Store;
     use std::time::Duration;
 
@@ -45,8 +47,12 @@ fn run_connect() {
             .to_string_lossy()
             .into_owned()
     });
+    let sim_sessions: u32 = std::env::var("GATEWAYD_SIM_SESSIONS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
-    let store = Store::open(&store_path).expect("open edge store");
+    let mut store = Store::open(&store_path).expect("open edge store");
     let client = ControlPlaneClient::new(base, Duration::from_secs(20)).expect("tls setup");
 
     let enrollment = ensure_enrolled(&store, &client, &token, &name).unwrap_or_else(|e| {
@@ -58,6 +64,13 @@ fn run_connect() {
         enrollment.gateway_id, enrollment.tenant_id
     );
 
+    // Optionally drive synthetic ASTM sessions through the ingestion pipeline into
+    // the durable outbox, so telemetry reflects real captured/queued counts.
+    if sim_sessions > 0 {
+        let ingested = ingest_synthetic(&mut store, sim_sessions);
+        println!("ingested {ingested} synthetic message(s) into the durable queue");
+    }
+
     client
         .heartbeat(&enrollment.gateway_id, &enrollment.device_credential)
         .unwrap_or_else(|e| {
@@ -65,6 +78,23 @@ fn run_connect() {
             std::process::exit(1);
         });
     println!("heartbeat ok — gateway is online in the cloud fleet");
+
+    // Report PHI-free counts so the cloud fleet shows message throughput.
+    let telemetry = Telemetry::from_store(&store).expect("snapshot telemetry");
+    client
+        .report_telemetry(
+            &enrollment.gateway_id,
+            &enrollment.device_credential,
+            &telemetry,
+        )
+        .unwrap_or_else(|e| {
+            eprintln!("telemetry report failed: {e}");
+            std::process::exit(1);
+        });
+    println!(
+        "telemetry reported: captured={} pending={} delivered={} dead={}",
+        telemetry.captured, telemetry.pending, telemetry.delivered, telemetry.dead
+    );
 
     // Pull any operator-published config (PHI-free; non-production settings only).
     match client.fetch_config(&enrollment.gateway_id, &enrollment.device_credential) {
@@ -75,6 +105,27 @@ fn run_connect() {
         Ok(None) => println!("no config published for this gateway yet"),
         Err(e) => eprintln!("config fetch failed (non-fatal): {e}"),
     }
+}
+
+/// Ingest `count` distinct synthetic ASTM sessions into the durable store,
+/// returning how many messages were persisted. Each session varies its
+/// specimen/patient ids so content-dedup does not collapse them. Synthetic data
+/// only — no analyzer contact, no real patient information.
+fn ingest_synthetic(store: &mut durable_queue::Store, count: u32) -> usize {
+    use protocol_astm::encode_session;
+
+    let mut total = 0usize;
+    for i in 0..count {
+        let message = format!(
+            "H|\\^&|||analyzer|||||host||P|1\rP|1||PID-SYNTH-{i}\rO|1|SPEC-{i}||^^^GLU\rR|1|^^^GLU|5.30|mmol/L|3.9^5.6|N||F\rL|1|N\r"
+        );
+        let session = encode_session(message.as_bytes(), 4096);
+        match process_session(store, &session, "sim:normal", &PipelineConfig::default()) {
+            Ok(outcomes) => total += outcomes.len(),
+            Err(e) => eprintln!("synthetic ingest {i} failed: {e}"),
+        }
+    }
+    total
 }
 
 /// Read a required environment variable or exit with a clear message.

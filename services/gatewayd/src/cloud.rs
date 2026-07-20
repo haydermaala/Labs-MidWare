@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use durable_queue::Store;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 /// Edge-store config keys under which enrollment identity is persisted.
 const KEY_GATEWAY_ID: &str = "cloud.gateway_id";
@@ -56,6 +56,33 @@ pub struct ConfigView {
     pub settings_json: String,
     #[serde(rename = "publishedAt")]
     pub published_at: String,
+}
+
+/// PHI-free operational counters the gateway self-reports to the cloud. Message
+/// counts and timing only — never any message content or result value. Field
+/// names serialize to the camelCase the control plane expects.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Telemetry {
+    pub captured: i64,
+    pub pending: i64,
+    pub delivered: i64,
+    pub dead: i64,
+    pub last_capture_at: Option<String>,
+}
+
+impl Telemetry {
+    /// Snapshot the durable store: captured raw-message total, outbox states,
+    /// and the most recent capture time.
+    pub fn from_store(store: &Store) -> Result<Self, CloudError> {
+        Ok(Self {
+            captured: store.raw_message_count().map_err(store_err)?,
+            pending: store.outbox_count("pending").map_err(store_err)?,
+            delivered: store.outbox_count("delivered").map_err(store_err)?,
+            dead: store.outbox_count("dead").map_err(store_err)?,
+            last_capture_at: store.latest_capture_at().map_err(store_err)?,
+        })
+    }
 }
 
 /// A blocking HTTPS client bound to one control-plane base URL.
@@ -109,6 +136,26 @@ impl ControlPlaneClient {
             .set("X-Gateway-Id", gateway_id)
             .set("X-Gateway-Credential", credential)
             .call();
+        read_body(resp, path).map(|_| ())
+    }
+
+    /// Report a PHI-free telemetry snapshot (204 on success). Also counts as a
+    /// heartbeat server-side.
+    pub fn report_telemetry(
+        &self,
+        gateway_id: &str,
+        credential: &str,
+        telemetry: &Telemetry,
+    ) -> Result<(), CloudError> {
+        let path = "/api/gateways/telemetry";
+        let body = serde_json::to_string(telemetry).map_err(|e| CloudError::Body(e.to_string()))?;
+        let resp = self
+            .agent
+            .post(&self.url(path))
+            .set("X-Gateway-Id", gateway_id)
+            .set("X-Gateway-Credential", credential)
+            .set("Content-Type", "application/json")
+            .send_string(&body);
         read_body(resp, path).map(|_| ())
     }
 
@@ -243,6 +290,22 @@ mod tests {
     fn heartbeat_accepts_204() {
         let base = serve_once("HTTP/1.1 204 No Content", String::new());
         assert!(client(base).heartbeat("gw_1", "cred_abc").is_ok());
+    }
+
+    #[test]
+    fn telemetry_snapshot_and_report() {
+        // A store with two captured messages yields captured=2 (dedup varies ids).
+        let mut store = Store::open_in_memory().unwrap();
+        let ingested = crate::ingest_synthetic(&mut store, 2);
+        assert_eq!(ingested, 2);
+        let snap = Telemetry::from_store(&store).unwrap();
+        assert_eq!(snap.captured, 2);
+        assert!(snap.last_capture_at.is_some());
+
+        let base = serve_once("HTTP/1.1 204 No Content", String::new());
+        assert!(client(base)
+            .report_telemetry("gw_1", "cred_abc", &snap)
+            .is_ok());
     }
 
     #[test]

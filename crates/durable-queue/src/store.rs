@@ -330,6 +330,22 @@ impl Store {
         )?)
     }
 
+    /// Count captured raw messages (append-only; the analyzer-observed total).
+    pub fn raw_message_count(&self) -> Result<i64> {
+        Ok(self
+            .conn
+            .query_row("SELECT COUNT(*) FROM raw_messages", [], |r| r.get(0))?)
+    }
+
+    /// The most recent capture time (max received_at, RFC 3339), or None if empty.
+    pub fn latest_capture_at(&self) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT MAX(received_at) FROM raw_messages", [], |r| {
+                r.get::<_, Option<String>>(0)
+            })?)
+    }
+
     /// Record an acknowledgement for an outbox row and mark it delivered when
     /// accepted.
     pub fn record_ack(

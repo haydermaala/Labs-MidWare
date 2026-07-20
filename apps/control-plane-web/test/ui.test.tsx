@@ -28,21 +28,23 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
+const noTelemetry = { captured: 0, pending: 0, delivered: 0, dead: 0, lastCaptureAt: null };
 const gateways: GatewaySummary[] = [
   {
     id: 'gw_online0001abcd', tenantId: 'ten_1', name: 'Chemistry Analyzer A',
     enrolledAt: '2026-07-19T10:00:00Z', active: true,
     lastSeenAt: '2026-07-19T11:00:00Z', status: 'online',
+    telemetry: { captured: 12, pending: 1, delivered: 11, dead: 0, lastCaptureAt: '2026-07-19T11:00:00Z' },
   },
   {
     id: 'gw_never00002abcd', tenantId: 'ten_1', name: 'Hematology Analyzer B',
     enrolledAt: '2026-07-19T10:00:00Z', active: true,
-    lastSeenAt: null, status: 'never',
+    lastSeenAt: null, status: 'never', telemetry: noTelemetry,
   },
   {
     id: 'gw_decomm003abcd', tenantId: 'ten_1', name: 'Retired Bench Unit',
     enrolledAt: '2026-07-19T09:00:00Z', active: false,
-    lastSeenAt: '2026-07-19T09:30:00Z', status: 'decommissioned',
+    lastSeenAt: '2026-07-19T09:30:00Z', status: 'decommissioned', telemetry: noTelemetry,
   },
 ];
 
@@ -109,8 +111,9 @@ describe('fleet table', () => {
     expect(screen.getByText('decommissioned')).toBeTruthy();
     // Every badge pairs colour with an icon and a text label.
     expect(container.querySelectorAll('[role="status"] svg').length).toBe(3);
-    // Never-seen gateways show an em dash rather than a fabricated timestamp.
-    expect(screen.getByText('—')).toBeTruthy();
+    // Absent data (never-seen last-seen, no telemetry) shows an em dash rather
+    // than a fabricated value.
+    expect(screen.getAllByText('—').length).toBeGreaterThan(0);
 
     const buttons = screen.getAllByRole('button', { name: /decommission/i });
     expect(buttons).toHaveLength(3);

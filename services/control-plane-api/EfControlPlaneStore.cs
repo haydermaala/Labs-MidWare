@@ -188,7 +188,8 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
             .AsEnumerable() // status is derived against 'now'; compute after materializing
             .Select(g => new GatewayView(
                 g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
-                GatewayLiveness.Status(g.Active, g.LastSeenAt, now)))
+                GatewayLiveness.Status(g.Active, g.LastSeenAt, now),
+                new GatewayTelemetry(g.CapturedCount, g.PendingCount, g.DeliveredCount, g.DeadCount, g.LastCaptureAt)))
             .ToList();
     }
 
@@ -210,6 +211,24 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             return false;
         }
+        gateway.LastSeenAt = _clock.GetUtcNow();
+        db.SaveChanges();
+        return true;
+    }
+
+    public bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry)
+    {
+        using var db = _factory.CreateDbContext();
+        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId);
+        if (gateway is null)
+        {
+            return false;
+        }
+        gateway.CapturedCount = telemetry.Captured;
+        gateway.PendingCount = telemetry.Pending;
+        gateway.DeliveredCount = telemetry.Delivered;
+        gateway.DeadCount = telemetry.Dead;
+        gateway.LastCaptureAt = telemetry.LastCaptureAt;
         gateway.LastSeenAt = _clock.GetUtcNow();
         db.SaveChanges();
         return true;

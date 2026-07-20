@@ -262,6 +262,16 @@ public sealed class GatewayEntity
 
     /// <summary>Last authenticated contact (heartbeat/config fetch); null until first seen.</summary>
     public DateTimeOffset? LastSeenAt { get; set; }
+
+    // PHI-free telemetry — the gateway's last self-reported operational counters.
+    // Message counts and timing only; never any message content or result value.
+    public long CapturedCount { get; set; }
+    public long PendingCount { get; set; }
+    public long DeliveredCount { get; set; }
+    public long DeadCount { get; set; }
+
+    /// <summary>When the gateway last observed a message from the analyzer.</summary>
+    public DateTimeOffset? LastCaptureAt { get; set; }
 }
 
 /// <summary>A gateway's rotated device credential.</summary>

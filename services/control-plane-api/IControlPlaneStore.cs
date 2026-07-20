@@ -60,6 +60,12 @@ public interface IControlPlaneStore
     /// </summary>
     bool RecordHeartbeat(string gatewayId);
 
+    /// <summary>
+    /// Record a gateway's PHI-free telemetry snapshot (message counts + last
+    /// capture time), also updating last-seen. Returns false if it does not exist.
+    /// </summary>
+    bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry);
+
     /// <summary>The tenant that owns a gateway, if any.</summary>
     string? TenantOfGateway(string gatewayId);
 
