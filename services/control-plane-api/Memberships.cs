@@ -148,6 +148,89 @@ public sealed class MembershipService
         return true;
     }
 
+    /// <summary>Outcome of a membership change (maps to an HTTP status).</summary>
+    public enum ChangeResult
+    {
+        Ok,
+        NotFound,
+        InvalidRole,
+        /// <summary>Refused: a tenant must always keep at least one active owner.</summary>
+        LastOwner,
+        /// <summary>Refused: only an owner may grant or revoke the owner role.</summary>
+        RequiresOwner,
+    }
+
+    /// <summary>Whether the tenant would still have an active owner if this
+    /// member stopped being one.</summary>
+    private static bool WouldStrandTenant(AppDbContext db, string tenantId, MembershipEntity target) =>
+        target.Role == Roles.Owner &&
+        db.Memberships.Count(m => m.TenantId == tenantId && m.Active && m.Role == Roles.Owner) <= 1;
+
+    /// <summary>
+    /// Change a member's role. Beyond the caller's CanManageUsers check, granting
+    /// or revoking <c>owner</c> requires the actor to be an owner — otherwise a
+    /// tenant-admin could promote themselves — and the last owner cannot be
+    /// demoted, which would lock the tenant out of its own administration.
+    /// </summary>
+    public ChangeResult ChangeRole(string tenantId, string userId, string newRole, string actorRole)
+    {
+        if (!Roles.All.Contains(newRole))
+        {
+            return ChangeResult.InvalidRole;
+        }
+        using var db = _factory.CreateDbContext();
+        var membership = db.Memberships.FirstOrDefault(m =>
+            m.TenantId == tenantId && m.UserId == userId && m.Active);
+        if (membership is null)
+        {
+            return ChangeResult.NotFound;
+        }
+        if ((newRole == Roles.Owner || membership.Role == Roles.Owner) && actorRole != Roles.Owner)
+        {
+            return ChangeResult.RequiresOwner;
+        }
+        if (membership.Role == newRole)
+        {
+            return ChangeResult.Ok; // idempotent
+        }
+        if (newRole != Roles.Owner && WouldStrandTenant(db, tenantId, membership))
+        {
+            return ChangeResult.LastOwner;
+        }
+        var previous = membership.Role;
+        membership.Role = newRole;
+        Audit(db, "membership.role_changed", tenantId, $"{userId}: {previous} -> {newRole}");
+        db.SaveChanges();
+        return ChangeResult.Ok;
+    }
+
+    /// <summary>
+    /// Remove a member (soft: the membership is deactivated, so the audit trail
+    /// and history remain). Same owner guards as <see cref="ChangeRole"/>.
+    /// </summary>
+    public ChangeResult RemoveMember(string tenantId, string userId, string actorRole)
+    {
+        using var db = _factory.CreateDbContext();
+        var membership = db.Memberships.FirstOrDefault(m =>
+            m.TenantId == tenantId && m.UserId == userId && m.Active);
+        if (membership is null)
+        {
+            return ChangeResult.NotFound;
+        }
+        if (membership.Role == Roles.Owner && actorRole != Roles.Owner)
+        {
+            return ChangeResult.RequiresOwner;
+        }
+        if (WouldStrandTenant(db, tenantId, membership))
+        {
+            return ChangeResult.LastOwner;
+        }
+        membership.Active = false;
+        Audit(db, "membership.removed", tenantId, $"{userId} ({membership.Role})");
+        db.SaveChanges();
+        return ChangeResult.Ok;
+    }
+
     /// <summary>Create a single-use, 7-day invitation. Caller must already be
     /// authorized (CanManageUsers) — this method only records + tokens it.</summary>
     public InvitationCreated? Invite(string tenantId, string email, string role, string byUserId)

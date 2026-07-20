@@ -202,10 +202,53 @@ app.MapGet("/api/tenants/{tenantId}/members", (string tenantId, AuthService auth
     return Results.Json(members.MembersOf(tenantId));
 });
 
+// The actor's role drives the owner-only guards below; the platform admin token
+// acts with owner authority.
+string ActorRole(HttpRequest req, AuthService auth, MembershipService members, string tenantId)
+{
+    if (IsAdmin(req))
+    {
+        return Roles.Owner;
+    }
+    var current = CurrentUser(req, auth);
+    return current is null ? "" : members.RoleIn(current.Value.User.Id, tenantId) ?? "";
+}
+
+IResult ChangeOutcome(MembershipService.ChangeResult result) => result switch
+{
+    MembershipService.ChangeResult.Ok => Results.NoContent(),
+    MembershipService.ChangeResult.NotFound => Results.NotFound(),
+    MembershipService.ChangeResult.InvalidRole => Results.BadRequest(new { error = "unknown role" }),
+    MembershipService.ChangeResult.LastOwner => Results.Conflict(new
+    {
+        error = "a laboratory must keep at least one owner; promote another member first",
+    }),
+    _ => Results.StatusCode(StatusCodes.Status403Forbidden),
+};
+
+app.MapPost("/api/tenants/{tenantId}/members/{userId}/role",
+    (string tenantId, string userId, ChangeRoleRequest body, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    return ChangeOutcome(members.ChangeRole(tenantId, userId, body.Role, ActorRole(req, auth, members, tenantId)));
+});
+
+app.MapPost("/api/tenants/{tenantId}/members/{userId}/remove",
+    (string tenantId, string userId, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    return ChangeOutcome(members.RemoveMember(tenantId, userId, ActorRole(req, auth, members, tenantId)));
+});
+
 app.MapPost("/api/tenants/{tenantId}/invitations",
     async (string tenantId, InviteRequest body, AuthService auth, MembershipService members, IEmailSender mail, HttpRequest req) =>
 {
     if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageUsers)) return Results.Unauthorized();
+    // Inviting an owner is the same privilege grant as promoting one.
+    if (body.Role == Roles.Owner && ActorRole(req, auth, members, tenantId) != Roles.Owner)
+    {
+        return Results.StatusCode(StatusCodes.Status403Forbidden);
+    }
     var byUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
     var created = members.Invite(tenantId, body.Email, body.Role, byUserId);
     if (created is null)
@@ -544,6 +587,9 @@ internal sealed record GrantMembershipRequest(string UserId, string TenantId, st
 
 /// <summary>Invite a user into a tenant with a role.</summary>
 internal sealed record InviteRequest(string Email, string Role);
+
+/// <summary>Change an existing member's role.</summary>
+internal sealed record ChangeRoleRequest(string Role);
 
 /// <summary>A TOTP code for enabling/disabling MFA.</summary>
 internal sealed record MfaCodeRequest(string Code);
