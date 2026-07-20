@@ -52,9 +52,16 @@ builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<MembershipService>();
 builder.Services.AddSingleton<BillingService>();
 
-// Billing provider: Stripe when test-mode keys are configured (Phase E2),
+// Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.
-builder.Services.AddSingleton<IBillingProvider, FakeBillingProvider>();
+if (!string.IsNullOrEmpty(builder.Configuration["Stripe:SecretKey"]))
+{
+    builder.Services.AddSingleton<IBillingProvider, StripeBillingProvider>();
+}
+else
+{
+    builder.Services.AddSingleton<IBillingProvider, FakeBillingProvider>();
+}
 
 // Email: Titan SMTP when configured (Smtp:Host), else a dev/test sink.
 if (!string.IsNullOrEmpty(builder.Configuration["Smtp:Host"]))
@@ -606,10 +613,11 @@ app.MapPost("/api/tenants/{tenantId}/billing/checkout",
 
 // Open the provider's billing portal (update card, cancel, view invoices).
 app.MapPost("/api/tenants/{tenantId}/billing/portal",
-    async (string tenantId, IBillingProvider provider, AuthService auth, MembershipService members, HttpRequest req) =>
+    async (string tenantId, IBillingProvider provider, BillingService billing, AuthService auth, MembershipService members, HttpRequest req) =>
 {
     if (!AuthorizedInTenant(req, auth, members, tenantId, Roles.CanManageBilling)) return Results.Unauthorized();
-    var redirect = await provider.CreatePortalAsync(tenantId);
+    var customerId = billing.ProviderCustomerIdFor(tenantId);
+    var redirect = await provider.CreatePortalAsync(tenantId, customerId);
     return Results.Json(new { url = redirect.Url });
 });
 
@@ -621,7 +629,7 @@ app.MapPost("/api/billing/webhook", async (IBillingProvider provider, BillingSer
 {
     using var reader = new StreamReader(req.Body);
     var payload = await reader.ReadToEndAsync();
-    var signature = req.Headers.TryGetValue("X-Billing-Signature", out var sig) ? sig.ToString() : null;
+    var signature = req.Headers.TryGetValue(provider.SignatureHeaderName, out var sig) ? sig.ToString() : null;
 
     var ev = provider.ParseWebhook(payload, signature);
     if (ev is null)

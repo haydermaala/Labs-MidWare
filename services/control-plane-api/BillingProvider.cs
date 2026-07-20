@@ -28,11 +28,17 @@ public interface IBillingProvider
     /// <summary>Provider identifier for diagnostics (e.g. "fake", "stripe").</summary>
     string Name { get; }
 
+    /// <summary>The HTTP header carrying this provider's webhook signature
+    /// (e.g. "Stripe-Signature"). The webhook endpoint reads this header.</summary>
+    string SignatureHeaderName { get; }
+
     /// <summary>Start hosted checkout for a plan; returns the redirect URL.</summary>
     Task<ProviderRedirect> CreateCheckoutAsync(string tenantId, string planId, CancellationToken ct = default);
 
-    /// <summary>Open the provider's billing portal for an existing customer.</summary>
-    Task<ProviderRedirect> CreatePortalAsync(string tenantId, CancellationToken ct = default);
+    /// <summary>Open the provider's billing portal for an existing customer. The
+    /// provider customer id (from the tenant's subscription) is required by real
+    /// providers; the endpoint resolves it and passes it here.</summary>
+    Task<ProviderRedirect> CreatePortalAsync(string tenantId, string? providerCustomerId, CancellationToken ct = default);
 
     /// <summary>
     /// Verify a webhook's signature and parse it into a normalized event, or null
@@ -53,13 +59,15 @@ public sealed class FakeBillingProvider : IBillingProvider
 
     public string Name => "fake";
 
+    public string SignatureHeaderName => "X-Billing-Signature";
+
     private string BaseUrl => (_config["ControlPlane:PublicBaseUrl"] ?? "http://localhost:5173").TrimEnd('/');
 
     public Task<ProviderRedirect> CreateCheckoutAsync(string tenantId, string planId, CancellationToken ct = default) =>
         Task.FromResult(new ProviderRedirect(
             $"{BaseUrl}/billing/checkout-complete?plan={Uri.EscapeDataString(planId)}&tenant={Uri.EscapeDataString(tenantId)}"));
 
-    public Task<ProviderRedirect> CreatePortalAsync(string tenantId, CancellationToken ct = default) =>
+    public Task<ProviderRedirect> CreatePortalAsync(string tenantId, string? providerCustomerId, CancellationToken ct = default) =>
         Task.FromResult(new ProviderRedirect($"{BaseUrl}/billing?portal=fake&tenant={Uri.EscapeDataString(tenantId)}"));
 
     /// <summary>

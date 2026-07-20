@@ -117,6 +117,17 @@ public sealed class BillingService
             sub?.CurrentPeriodEnd, sub?.CancelAtPeriodEnd ?? false);
     }
 
+    /// <summary>The tenant's provider customer id, if it has one (needed to open
+    /// the provider's billing portal). Never surfaced to clients.</summary>
+    public string? ProviderCustomerIdFor(string tenantId)
+    {
+        using var db = _factory.CreateDbContext();
+        return db.Subscriptions.AsNoTracking()
+            .Where(s => s.TenantId == tenantId)
+            .Select(s => s.ProviderCustomerId)
+            .FirstOrDefault();
+    }
+
     /// <summary>The tenant's subscription view, or null if none exists yet.</summary>
     public SubscriptionView? SubscriptionFor(string tenantId)
     {
