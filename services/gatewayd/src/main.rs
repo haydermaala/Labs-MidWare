@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod cloud;
+mod daemon;
 mod outbound;
 mod pipeline;
 
@@ -18,8 +19,98 @@ fn main() {
         Some("--deliver-demo") => run_deliver_demo(),
         Some("--serve") => run_serve(),
         Some("--connect") => run_connect(),
+        Some("--run") => run_daemon(),
         _ => print_health(),
     }
+}
+
+/// Run the continuous gateway daemon: enroll once, passively capture ASTM
+/// sessions over TCP into the durable queue, and on each cycle report liveness +
+/// PHI-free telemetry to the control plane. Configuration (in addition to the
+/// `--connect` variables) :
+///   GATEWAYD_CAPTURE_ADDR   loopback bind for the passive TCP capture listener
+///                           (default 127.0.0.1:9600)
+///   GATEWAYD_RUN_CYCLES     report cycles then exit; 0 = run until killed (default 0)
+///   GATEWAYD_RUN_INTERVAL   seconds between report cycles (default 10)
+/// Passive capture only — the gateway never writes to the analyzer, and no
+/// message content leaves for the cloud.
+fn run_daemon() {
+    use cloud::{ensure_enrolled, ControlPlaneClient};
+    use daemon::{cycle_interval, report_cycle, SessionAssembler};
+    use durable_queue::Store;
+    use std::net::SocketAddr;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use transport_core::{CaptureSink, TransportStats};
+    use transport_tcp::{start, TcpCaptureConfig};
+
+    let base = env_required("LC_CONTROL_PLANE_URL");
+    let token = std::env::var("GATEWAYD_BOOTSTRAP_TOKEN").unwrap_or_default();
+    let name = std::env::var("GATEWAYD_NAME").unwrap_or_else(|_| "edge-gateway".to_owned());
+    let store_path = std::env::var("GATEWAYD_STORE").unwrap_or_else(|_| {
+        std::env::temp_dir()
+            .join("gatewayd-cloud.db")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let capture_addr: SocketAddr = std::env::var("GATEWAYD_CAPTURE_ADDR")
+        .unwrap_or_else(|_| "127.0.0.1:9600".to_owned())
+        .parse()
+        .unwrap_or_else(|_| {
+            eprintln!("GATEWAYD_CAPTURE_ADDR must be a socket address");
+            std::process::exit(2);
+        });
+    if !capture_addr.ip().is_loopback() {
+        eprintln!("refusing to bind a non-loopback capture address {capture_addr}");
+        std::process::exit(2);
+    }
+    let cycles: u64 = env_parse("GATEWAYD_RUN_CYCLES", 0);
+    let interval = cycle_interval(env_parse("GATEWAYD_RUN_INTERVAL", 10));
+
+    let mut store = Store::open(&store_path).expect("open edge store");
+    let client = ControlPlaneClient::new(base, Duration::from_secs(20)).expect("tls setup");
+    let enrollment = ensure_enrolled(&store, &client, &token, &name).unwrap_or_else(|e| {
+        eprintln!("enrollment failed: {e}");
+        std::process::exit(1);
+    });
+    println!(
+        "enrolled gateway {} (tenant {})",
+        enrollment.gateway_id, enrollment.tenant_id
+    );
+
+    // Passive TCP capture listener — the synthetic analyzer connects and streams.
+    let (sink, rx) = CaptureSink::bounded(256);
+    let stats = Arc::new(TransportStats::default());
+    let server = start(TcpCaptureConfig::new(capture_addr), sink, stats).expect("start capture");
+    println!(
+        "capturing on tcp://{} — stream synthetic ASTM here (passive; device→gateway only)",
+        server.local_addr()
+    );
+
+    let mut assembler = SessionAssembler::default();
+    let mut cycle = 0u64;
+    loop {
+        std::thread::sleep(interval);
+        let ingested = report_cycle(&rx, &mut assembler, &mut store, &client, &enrollment);
+        cycle += 1;
+        println!(
+            "cycle {cycle}: ingested {ingested} message(s) this cycle; reported heartbeat + telemetry"
+        );
+        if cycles != 0 && cycle >= cycles {
+            break;
+        }
+    }
+    server.stop();
+    println!("daemon stopped after {cycle} cycle(s)");
+}
+
+/// Parse an environment variable to `T`, falling back to `default` when unset or
+/// unparseable.
+fn env_parse<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Enroll against the LabConnect control plane, then report liveness and PHI-free

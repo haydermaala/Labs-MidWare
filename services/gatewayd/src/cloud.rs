@@ -249,17 +249,31 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::TcpListener;
+    use std::time::Duration as StdDuration;
 
     /// One-shot loopback HTTP server: accepts a single request and replies with a
     /// canned response. Returns the base URL to point a client at (plain http —
     /// TLS is exercised only against real https endpoints).
+    ///
+    /// The whole request is drained before responding: replying while the client
+    /// is still writing its body can reset the connection mid-write (a race seen
+    /// on macOS). A short read timeout ends the drain once the client goes quiet
+    /// (it is then waiting for our response).
     fn serve_once(status_line: &'static str, body: String) -> String {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let addr = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
+                stream
+                    .set_read_timeout(Some(StdDuration::from_millis(200)))
+                    .ok();
                 let mut buf = [0u8; 4096];
-                let _ = stream.read(&mut buf);
+                // Drain until the client stops sending (EOF or read timeout).
+                while let Ok(n) = stream.read(&mut buf) {
+                    if n == 0 {
+                        break;
+                    }
+                }
                 let resp = format!(
                     "{status_line}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
