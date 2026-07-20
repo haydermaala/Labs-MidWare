@@ -470,6 +470,8 @@ dependencies = [
  "serde_json",
  "thiserror",
  "time",
+ "transport-core",
+ "transport-tcp",
  "ureq",
 ]
 

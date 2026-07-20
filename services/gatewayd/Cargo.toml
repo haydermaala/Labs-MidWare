@@ -14,6 +14,8 @@ path = "src/main.rs"
 [dependencies]
 gateway-api.workspace = true
 canonical-model.workspace = true
+transport-core.workspace = true
+transport-tcp.workspace = true
 protocol-astm.workspace = true
 protocol-hl7.workspace = true
 durable-queue.workspace = true

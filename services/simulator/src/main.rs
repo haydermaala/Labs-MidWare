@@ -5,13 +5,20 @@
 //! construction; the simulator must never carry real patient data.
 //!
 //! Usage:
-//!   lab-simulator            # run every scenario and print a summary
-//!   lab-simulator <name>     # run one scenario by name
-//!   lab-simulator --list     # list scenario names
+//!   lab-simulator                     # run every scenario and print a summary
+//!   lab-simulator <name>              # run one scenario by name
+//!   lab-simulator --list              # list scenario names
+//!   lab-simulator --emit-tcp <addr> [count]
+//!                                     # stream <count> synthetic ASTM sessions to
+//!                                     # a passive capture listener (e.g. gatewayd
+//!                                     # --run). Default count = 3.
 #![forbid(unsafe_code)]
 
+use std::io::Write;
+use std::net::TcpStream;
+
 use protocol_astm::sim::Scenario;
-use protocol_astm::{parse_message, run_scenario, LinkAction};
+use protocol_astm::{encode_session, parse_message, run_scenario, LinkAction};
 
 fn main() {
     println!(
@@ -26,6 +33,17 @@ fn main() {
                 println!("  {}", s.name());
             }
         }
+        Some("--emit-tcp") => {
+            let addr = std::env::args().nth(2).unwrap_or_else(|| {
+                eprintln!("usage: lab-simulator --emit-tcp <addr> [count]");
+                std::process::exit(2);
+            });
+            let count: u32 = std::env::args()
+                .nth(3)
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3);
+            emit_tcp(&addr, count);
+        }
         Some(name) => match Scenario::ALL.iter().find(|s| s.name() == name) {
             Some(&scenario) => report(scenario),
             None => {
@@ -39,6 +57,26 @@ fn main() {
             }
         }
     }
+}
+
+/// Stream `count` distinct synthetic ASTM sessions to a passive capture listener,
+/// each on its own short-lived TCP connection (mirroring how an analyzer connects
+/// per result batch). All data is synthetic — no real patient information.
+fn emit_tcp(addr: &str, count: u32) {
+    for i in 0..count {
+        let msg = format!(
+            "H|\\^&|||analyzer|||||host||P|1\rP|1||PID-SYNTH-{i}\rO|1|SPEC-{i}||^^^GLU\rR|1|^^^GLU|5.30|mmol/L|3.9^5.6|N||F\rL|1|N\r"
+        );
+        let session = encode_session(msg.as_bytes(), 4096);
+        match TcpStream::connect(addr).and_then(|mut s| s.write_all(&session)) {
+            Ok(()) => println!("emitted synthetic session {} to {addr}", i + 1),
+            Err(e) => {
+                eprintln!("failed to emit to {addr}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    println!("done — {count} synthetic session(s) sent");
 }
 
 fn report(scenario: Scenario) {
