@@ -29,7 +29,7 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
     }
 
     [Fact]
-    public async Task Ready_ReturnsReady()
+    public async Task Ready_ReturnsReady_WhenTheDatabaseIsReachable()
     {
         var client = _factory.CreateClient();
 
@@ -38,6 +38,20 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var body = await response.Content.ReadFromJsonAsync<HealthDto>();
         Assert.Equal("ready", body!.Status);
+    }
+
+    [Fact]
+    public async Task Every_Response_Carries_The_Security_Headers()
+    {
+        var client = _factory.CreateClient();
+
+        var response = await client.GetAsync("/health");
+
+        Assert.Equal("nosniff", response.Headers.GetValues("X-Content-Type-Options").Single());
+        Assert.Equal("DENY", response.Headers.GetValues("X-Frame-Options").Single());
+        Assert.Equal("no-referrer", response.Headers.GetValues("Referrer-Policy").Single());
+        Assert.Contains("default-src 'none'", response.Headers.GetValues("Content-Security-Policy").Single());
+        Assert.Contains("max-age=", response.Headers.GetValues("Strict-Transport-Security").Single());
     }
 
     private sealed record HealthDto(string Status, string Service, string Version);

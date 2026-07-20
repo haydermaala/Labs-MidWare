@@ -109,6 +109,21 @@ if (postgres is not null)
     SchemaBootstrap.Apply(db);
 }
 
+// Security response headers on every response. The API returns JSON only (no
+// HTML), so the CSP is maximally restrictive; HSTS hardens the public HTTPS
+// endpoint (Railway terminates TLS in front of the app). Browsers ignore HSTS
+// over plain http, so it is safe to send unconditionally.
+app.Use(async (ctx, next) =>
+{
+    var headers = ctx.Response.Headers;
+    headers["X-Content-Type-Options"] = "nosniff";
+    headers["X-Frame-Options"] = "DENY";
+    headers["Referrer-Policy"] = "no-referrer";
+    headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'";
+    headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains";
+    await next();
+});
+
 app.UseCors();
 app.UseRateLimiter();
 
@@ -120,8 +135,28 @@ bool IsAdmin(HttpRequest req) =>
     req.Headers.Authorization.ToString() == $"Bearer {adminToken}";
 
 // --- health ---------------------------------------------------------------
+// Liveness: the process is up (no dependencies checked).
 app.MapGet("/health", () => Results.Json(new HealthResponse("ok", "control-plane-api", version)));
-app.MapGet("/health/ready", () => Results.Json(new HealthResponse("ready", "control-plane-api", version)));
+
+// Readiness: verifies the database is reachable, so an orchestrator never routes
+// traffic to (or completes a rollout onto) a replica that cannot serve requests.
+// Returns 503 when the DB is unreachable.
+app.MapGet("/health/ready", async (IDbContextFactory<AppDbContext> factory) =>
+{
+    try
+    {
+        await using var db = await factory.CreateDbContextAsync();
+        return await db.Database.CanConnectAsync()
+            ? Results.Json(new HealthResponse("ready", "control-plane-api", version))
+            : Results.Json(new HealthResponse("not-ready", "control-plane-api", version),
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    catch (Exception ex) when (ex is not OperationCanceledException)
+    {
+        return Results.Json(new HealthResponse("not-ready", "control-plane-api", version),
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+});
 
 // --- tenant management (admin) --------------------------------------------
 app.MapPost("/api/tenants", (CreateTenantRequest body, IControlPlaneStore store, HttpRequest req) =>
