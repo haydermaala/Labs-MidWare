@@ -108,7 +108,9 @@ public static class Permissions
 
     // ── Billing ──────────────────────────────────────────────────────────────
     public static readonly PermissionDefinition BillingSubscriptionView =
-        Def("billing", "subscription", "view", RiskLevel.Low, LegacyCapability.ManageBilling, "Read the tenant's subscription + entitlements.");
+        // Any tenant member may read billing today (endpoint uses CanView); tightening
+        // to a billing-only capability is an enforcement-phase decision, not a P2 change.
+        Def("billing", "subscription", "view", RiskLevel.Low, LegacyCapability.View, "Read the tenant's subscription + entitlements.");
     public static readonly PermissionDefinition BillingSubscriptionManage =
         Def("billing", "subscription", "manage", RiskLevel.High, LegacyCapability.ManageBilling,
             "Start/change the tenant's plan via checkout.", requiresFreshAuth: true);
