@@ -107,7 +107,9 @@ public sealed class BillingService
     public Entitlements EntitlementsFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var sub = db.Subscriptions.AsNoTracking().FirstOrDefault(s => s.TenantId == tenantId);
+        scope.Complete();
         var entitledPlanId = sub is not null && SubscriptionStatus.IsEntitled(sub.Status) ? sub.PlanId : Plans.Trial;
         var plan = Plans.Resolve(entitledPlanId);
         return new Entitlements(
@@ -122,17 +124,22 @@ public sealed class BillingService
     public string? ProviderCustomerIdFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Subscriptions.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var customerId = db.Subscriptions.AsNoTracking()
             .Where(s => s.TenantId == tenantId)
             .Select(s => s.ProviderCustomerId)
             .FirstOrDefault();
+        scope.Complete();
+        return customerId;
     }
 
     /// <summary>The tenant's subscription view, or null if none exists yet.</summary>
     public SubscriptionView? SubscriptionFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var sub = db.Subscriptions.AsNoTracking().FirstOrDefault(s => s.TenantId == tenantId);
+        scope.Complete();
         return sub is null ? null
             : new SubscriptionView(sub.PlanId, sub.Status, sub.CurrentPeriodEnd, sub.CancelAtPeriodEnd);
     }
@@ -151,8 +158,10 @@ public sealed class BillingService
         DateTimeOffset? currentPeriodEnd, bool cancelAtPeriodEnd)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         UpsertInto(db, tenantId, planId, status, providerCustomerId, providerSubscriptionId, currentPeriodEnd, cancelAtPeriodEnd);
         db.SaveChanges();
+        scope.Complete();
     }
 
     private void UpsertInto(
@@ -185,6 +194,11 @@ public sealed class BillingService
     public bool TryApplyProviderEvent(ProviderSubscriptionEvent ev)
     {
         using var db = _factory.CreateDbContext();
+        // The event carries its verified tenant, so the whole apply is tenant-scoped.
+        // The replay check only needs to see this tenant's events (ProviderEventId is
+        // globally unique and maps to one tenant); the DB's UNIQUE index is the
+        // backstop for any cross-tenant collision (caught below).
+        using var scope = TenantScope.Begin(db, ev.TenantId);
 
         // Fast path: an already-processed id is a replay — do nothing.
         if (db.BillingEvents.Any(e => e.ProviderEventId == ev.EventId))
@@ -204,6 +218,7 @@ public sealed class BillingService
         try
         {
             db.SaveChanges();
+            scope.Complete();
             return true;
         }
         catch (DbUpdateException)

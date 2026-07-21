@@ -177,6 +177,31 @@ platform roles (with `BYPASSRLS` or their own broader policies) and step-up
 auth; this P1 policy is deliberately just the registry read the existing app
 already needs.
 
+### 8. Membership & billing service scoping
+`EfControlPlaneStore` is not the only DB-touching service. `BillingService` and
+`MembershipService` (and their `IDbContextFactory` access) are scoped the same
+way:
+
+- **BillingService** — every method is tenant-scoped (`TenantScope`): the
+  entitlement/subscription reads and `UpsertSubscription` take a `tenantId`, and
+  `TryApplyProviderEvent` scopes to the event's verified `ev.TenantId` (the
+  webhook carries its tenant; the replay check only needs this tenant's
+  `billing_events`, with the global UNIQUE index as the cross-tenant backstop).
+- **MembershipService** — most methods are tenant-scoped (`RoleIn`, `MembersOf`,
+  `Grant`, `ChangeRole`, `RemoveMember`, `Invite`, `InvitationsFor`,
+  `RevokeInvitation`). Two need auxiliary policies (both single-table, added to
+  the `AuxiliaryPolicies` set):
+  - `MembershipsFor(userId)` reads a user's memberships across every tenant, so
+    it runs under a `UserScope` binding `app.user_id`; the `memberships_self_read`
+    policy reveals only the caller's own rows.
+  - `Accept(token)` finds an invitation by its hashed token before the tenant is
+    known, so it runs under an `InvitationScope` binding
+    `app.invitation_token_hash` (the `invitations_token_auth` policy), then binds
+    the resolved tenant for the accept write — mirroring the bootstrap-token flow.
+
+Global tables (`users`, `user_sessions`, `user_tokens`, `recovery_codes`) carry
+no tenant RLS, so `AuthService` needs no scoping.
+
 ## Verification
 
 Full-schema apply-verification (2026-07-21): the real EF migration script
@@ -222,6 +247,13 @@ read of `tenants` returns all rows (cross-tenant registry) while `gateways`
 returns **0** (the flag grants no access to tenant data); with no flag and no
 tenant context, `tenants` returns 0 (fail-closed); with `app.tenant_id='t1'`
 only t1's registry row is visible (self-policy).
+
+**Service policies (§8) proven** as `app_runtime`: `memberships_self_read` —
+`app.user_id='u1'` reveals u1's memberships across both its tenants and no one
+else's, 0 with no user context; `RoleIn` still sees a tenant's memberships under
+`app.tenant_id`. `invitations_token_auth` — the hashed token reveals only the
+matching invitation, after which binding its tenant lets the accept update +
+membership insert succeed; a wrong hash reveals nothing.
 
 ## Consequences
 

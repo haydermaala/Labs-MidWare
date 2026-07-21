@@ -43,11 +43,13 @@ namespace ControlPlane.Api.Migrations
             ("tenants", "\"Id\" = current_setting('app.tenant_id', true)"),
         };
 
-        // Device-auth policies (ADR 0018 §6): PERMISSIVE, added alongside the tenant
-        // policies (OR-combined). Each reveals only the row whose secret the caller
-        // proves via a transaction-local GUC. Both are single-table predicates, so
-        // there is no policy recursion. (Name, Table, USING, WITH CHECK|null.)
-        private static readonly (string Name, string Table, string Using, string Check)[] DeviceAuthPolicies =
+        // Auxiliary permissive policies (ADR 0018 §6, §8): added alongside the tenant
+        // policies (OR-combined). Each reveals only the row(s) the caller proves a
+        // right to via a transaction-local GUC — a presented secret (device
+        // enroll/credential, invitation token) or the caller's own user id. All are
+        // single-table predicates, so there is no policy recursion.
+        // (Name, Table, USING, WITH CHECK|null.)
+        private static readonly (string Name, string Table, string Using, string Check)[] AuxiliaryPolicies =
         {
             // Enroll: reveal a bootstrap token only to a caller presenting that token.
             ("bootstrap_tokens_device_auth", "bootstrap_tokens",
@@ -60,6 +62,16 @@ namespace ControlPlane.Api.Migrations
             ("device_credentials_device_auth", "device_credentials",
                 "\"GatewayId\" = current_setting('app.device_gateway', true) "
                 + "AND \"Credential\" = current_setting('app.device_credential', true)",
+                null),
+            // Invitation accept: reveal an invitation only to a caller presenting its
+            // (hashed) token — the tenant is unknown until the token is matched.
+            ("invitations_token_auth", "invitations",
+                "\"TokenHash\" = current_setting('app.invitation_token_hash', true)",
+                "\"TokenHash\" = current_setting('app.invitation_token_hash', true)"),
+            // Self read: a user may read their OWN memberships across tenants (drives
+            // the tenant switcher). Read-only; memberships are written tenant-scoped.
+            ("memberships_self_read", "memberships",
+                "\"UserId\" = current_setting('app.user_id', true)",
                 null),
         };
 
@@ -92,7 +104,7 @@ namespace ControlPlane.Api.Migrations
                     $"USING ({predicate}) WITH CHECK ({predicate});");
             }
 
-            foreach (var (name, table, usingExpr, check) in DeviceAuthPolicies)
+            foreach (var (name, table, usingExpr, check) in AuxiliaryPolicies)
             {
                 var checkClause = check is null ? string.Empty : $" WITH CHECK ({check})";
                 migrationBuilder.Sql($"CREATE POLICY {name} ON {table} USING ({usingExpr}){checkClause};");
@@ -112,7 +124,7 @@ namespace ControlPlane.Api.Migrations
 
             migrationBuilder.Sql("DROP POLICY IF EXISTS tenants_platform_read ON tenants;");
 
-            foreach (var (name, table, _, _) in DeviceAuthPolicies)
+            foreach (var (name, table, _, _) in AuxiliaryPolicies)
             {
                 migrationBuilder.Sql($"DROP POLICY IF EXISTS {name} ON {table};");
             }

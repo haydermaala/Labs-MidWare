@@ -88,21 +88,28 @@ public sealed class MembershipService
     public string? RoleIn(string userId, string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Memberships.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var role = db.Memberships.AsNoTracking()
             .FirstOrDefault(m => m.UserId == userId && m.TenantId == tenantId && m.Active)?.Role;
+        scope.Complete();
+        return role;
     }
 
     /// <summary>All active memberships for a user (drives the tenant switcher).</summary>
     public IReadOnlyCollection<MembershipView> MembershipsFor(string userId)
     {
-        using var db = _factory.CreateDbContext();
         var tenants = _tenants.Tenants().ToDictionary(t => t.Id);
-        return db.Memberships.AsNoTracking().Where(m => m.UserId == userId && m.Active)
+        using var db = _factory.CreateDbContext();
+        // A user reading their own memberships spans tenants — scope by user id.
+        using var scope = UserScope.Begin(db, userId);
+        var result = db.Memberships.AsNoTracking().Where(m => m.UserId == userId && m.Active)
             .AsEnumerable()
             .Where(m => tenants.ContainsKey(m.TenantId))
             .Select(m => new MembershipView(m.TenantId, tenants[m.TenantId].Name, m.Role, tenants[m.TenantId].Active))
             .OrderBy(v => v.TenantName, StringComparer.Ordinal)
             .ToList();
+        scope.Complete();
+        return result;
     }
 
     /// <summary>
@@ -122,10 +129,13 @@ public sealed class MembershipService
     public IReadOnlyCollection<MemberView> MembersOf(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return MembersQuery(db, tenantId)
+        using var scope = TenantScope.Begin(db, tenantId);
+        var result = MembersQuery(db, tenantId)
             .AsEnumerable() // order client-side over the materialized rows
             .OrderBy(v => v.Since)
             .ToList();
+        scope.Complete();
+        return result;
     }
 
     /// <summary>Grant a membership directly (bootstrap/platform-admin path).</summary>
@@ -136,6 +146,7 @@ public sealed class MembershipService
             return false;
         }
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         if (!_tenants.TenantExists(tenantId) || !db.Users.AsNoTracking().Any(u => u.Id == userId))
         {
             return false;
@@ -160,6 +171,7 @@ public sealed class MembershipService
         }
         Audit(db, "membership.granted", tenantId, $"{userId} as {role}");
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -194,6 +206,7 @@ public sealed class MembershipService
             return ChangeResult.InvalidRole;
         }
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var membership = db.Memberships.FirstOrDefault(m =>
             m.TenantId == tenantId && m.UserId == userId && m.Active);
         if (membership is null)
@@ -216,6 +229,7 @@ public sealed class MembershipService
         membership.Role = newRole;
         Audit(db, "membership.role_changed", tenantId, $"{userId}: {previous} -> {newRole}");
         db.SaveChanges();
+        scope.Complete();
         return ChangeResult.Ok;
     }
 
@@ -226,6 +240,7 @@ public sealed class MembershipService
     public ChangeResult RemoveMember(string tenantId, string userId, string actorRole)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var membership = db.Memberships.FirstOrDefault(m =>
             m.TenantId == tenantId && m.UserId == userId && m.Active);
         if (membership is null)
@@ -243,6 +258,7 @@ public sealed class MembershipService
         membership.Active = false;
         Audit(db, "membership.removed", tenantId, $"{userId} ({membership.Role})");
         db.SaveChanges();
+        scope.Complete();
         return ChangeResult.Ok;
     }
 
@@ -255,6 +271,7 @@ public sealed class MembershipService
             return null;
         }
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var tenant = _tenants.Tenants().FirstOrDefault(t => t.Id == tenantId && t.Active);
         if (tenant is null)
         {
@@ -276,6 +293,7 @@ public sealed class MembershipService
         db.Invitations.Add(invitation);
         Audit(db, "invitation.created", tenantId, $"{invitation.Email} as {role}");
         db.SaveChanges();
+        scope.Complete();
         return new InvitationCreated(ToView(invitation, now), token, tenant.Name);
     }
 
@@ -283,18 +301,22 @@ public sealed class MembershipService
     public IReadOnlyCollection<InvitationView> InvitationsFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var now = _clock.GetUtcNow();
-        return db.Invitations.AsNoTracking().Where(i => i.TenantId == tenantId)
+        var result = db.Invitations.AsNoTracking().Where(i => i.TenantId == tenantId)
             .OrderByDescending(i => i.CreatedAt)
             .AsEnumerable()
             .Select(i => ToView(i, now))
             .ToList();
+        scope.Complete();
+        return result;
     }
 
     /// <summary>Revoke a pending invitation (tenant-scoped).</summary>
     public bool RevokeInvitation(string tenantId, string invitationId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var invitation = db.Invitations.FirstOrDefault(i =>
             i.Id == invitationId && i.TenantId == tenantId && i.AcceptedAt == null && i.RevokedAt == null);
         if (invitation is null)
@@ -304,6 +326,7 @@ public sealed class MembershipService
         invitation.RevokedAt = _clock.GetUtcNow();
         Audit(db, "invitation.revoked", tenantId, invitation.Email);
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -314,14 +337,21 @@ public sealed class MembershipService
     /// </summary>
     public MembershipView? Accept(string token, string userId)
     {
+        var tokenHash = HashToken(token);
         using var db = _factory.CreateDbContext();
+        // Prove possession of the invitation token: the invitations_token_auth policy
+        // reveals only the matching invitation, before its tenant is known.
+        using var scope = InvitationScope.Begin(db, tokenHash);
         var now = _clock.GetUtcNow();
         var invitation = db.Invitations.FirstOrDefault(i =>
-            i.TokenHash == HashToken(token) && i.AcceptedAt == null && i.RevokedAt == null && i.ExpiresAt > now);
+            i.TokenHash == tokenHash && i.AcceptedAt == null && i.RevokedAt == null && i.ExpiresAt > now);
         if (invitation is null)
         {
             return null;
         }
+        // Bind the resolved tenant so the accept update + membership write pass the
+        // tenant policies.
+        scope.BindTenant(invitation.TenantId);
         var user = db.Users.AsNoTracking().FirstOrDefault(u => u.Id == userId && u.Active);
         var tenant = _tenants.Tenants().FirstOrDefault(t => t.Id == invitation.TenantId && t.Active);
         if (user is null || tenant is null || !string.Equals(user.Email, invitation.Email, StringComparison.Ordinal))
@@ -349,6 +379,7 @@ public sealed class MembershipService
         }
         Audit(db, "invitation.accepted", invitation.TenantId, $"{invitation.Email} as {invitation.Role}");
         db.SaveChanges();
+        scope.Complete();
         return new MembershipView(tenant.Id, tenant.Name, invitation.Role, tenant.Active);
     }
 
