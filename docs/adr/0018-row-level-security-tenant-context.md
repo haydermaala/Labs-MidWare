@@ -199,8 +199,15 @@ way:
     `app.invitation_token_hash` (the `invitations_token_auth` policy), then binds
     the resolved tenant for the accept write — mirroring the bootstrap-token flow.
 
-Global tables (`users`, `user_sessions`, `user_tokens`, `recovery_codes`) carry
-no tenant RLS, so `AuthService` needs no scoping.
+- **AuthService** operates on global tables (`users`, `user_sessions`,
+  `user_tokens`, `recovery_codes`) which carry no tenant RLS — but its **audit
+  trail** lives in the RLS-protected `audit` table under a `"platform"` sentinel
+  tenant (`AuthService.PlatformAuditTenant`). So every method that writes (login,
+  signup, logout, MFA, verification, reset) opens a `TenantScope` bound to that
+  sentinel; read-only paths and the per-request `Authenticate()` (which touch no
+  RLS table) stay unscoped. Because the scope wraps a transaction, **every path
+  that calls `SaveChanges` must `Complete()`** — including the wrong-MFA-code
+  paths, which persist a token consumption even though they write no audit row.
 
 ## Verification
 
@@ -253,7 +260,10 @@ only t1's registry row is visible (self-policy).
 else's, 0 with no user context; `RoleIn` still sees a tenant's memberships under
 `app.tenant_id`. `invitations_token_auth` — the hashed token reveals only the
 matching invitation, after which binding its tenant lets the accept update +
-membership insert succeed; a wrong hash reveals nothing.
+membership insert succeed; a wrong hash reveals nothing. The **AuthService**
+pattern is proven too: under `app.tenant_id='platform'` a global user insert and
+the platform-sentinel audit insert both succeed; **without** the scope the same
+audit insert is rejected by the policy (the failure the wiring prevents).
 
 ## Consequences
 
