@@ -56,6 +56,7 @@ builder.Services.AddSingleton<BillingService>();
 // subject's effective roles at a target scope before delegating to it.
 builder.Services.AddSingleton<IAuthorizationEngine, AuthorizationEngine>();
 builder.Services.AddSingleton<IScopedAuthorizationEngine, ScopedAuthorizationEngine>();
+builder.Services.AddSingleton<ScopeService>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.
