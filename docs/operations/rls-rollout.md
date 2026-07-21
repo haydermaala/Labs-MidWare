@@ -134,20 +134,45 @@ land the merge and repoint back-to-back and watch the first boot closely.
 
 ## Rollback
 
-RLS problems in production → restore isolation fast, no data change:
+RLS problems in production → restore access fast, no data change. **Read this
+carefully — the naive "just repoint to the owner" does not work under `FORCE`.**
 
-1. Repoint production `DATABASE_URL` back to the **owner** role (the owner is
-   exempt from `FORCE RLS`, so all queries work again immediately).
-2. If needed, drop enforcement without a schema rebuild — as the owner:
-   ```sql
-   ALTER TABLE gateways NO FORCE ROW LEVEL SECURITY;  -- repeat per tenant table,
-   -- or roll the migration back: it has a Down() that drops every policy and
-   -- NO FORCE / DISABLEs RLS on all tables.
-   ```
-3. Redeploy the prior `main` (pre-merge) if the app itself must be reverted.
+Verified against `postgres:16`: `FORCE ROW LEVEL SECURITY` subjects the table
+**owner** to the policies too, so a **non-superuser owner** (what Railway's managed
+role is) with no tenant context also sees **zero rows**. Repointing `DATABASE_URL`
+to that owner therefore does **not** restore access on its own. Only a **superuser**
+or a `BYPASSRLS` role is exempt from `FORCE`.
 
-Because rollback is a **repoint** (owner role bypasses RLS) it is near-instant and
-does not touch data. This is why the owner connection is retained.
+Fastest reliable rollback — run the migration's `Down()` as the owner (via
+`MIGRATION_DATABASE_URL`), which per tenant table drops the policy and does
+`NO FORCE` + `DISABLE ROW LEVEL SECURITY`:
+
+```bash
+# as the owner / migration role
+dotnet ef database update <migration-before-AddRowLevelSecurity> \
+  --connection "$MIGRATION_DATABASE_URL"
+```
+
+Or, to un-gate immediately without a migration step, as the owner:
+
+```sql
+-- per tenant table (gateways, bootstrap_tokens, configs, audit, memberships,
+-- invitations, subscriptions, billing_events, device_credentials, tenants):
+ALTER TABLE gateways NO FORCE ROW LEVEL SECURITY;   -- owner is now exempt, OR
+ALTER TABLE gateways DISABLE ROW LEVEL SECURITY;    -- no role is subject
+```
+
+After `NO FORCE`, repointing `DATABASE_URL` to the owner restores access (owner
+exempt when not forced) — verified: the owner then reads all rows. `DISABLE`
+restores access for the runtime role directly.
+
+Then, if the app itself must be reverted, redeploy the prior `main` (pre-merge).
+
+The rollback touches **no data** — it only relaxes policy enforcement — and is why
+the owner (`MIGRATION_DATABASE_URL`) connection is retained. (If your provider hands
+you a genuine **superuser** rather than a plain owner, repointing `DATABASE_URL` to
+it *does* restore access immediately, since superusers bypass `FORCE` — also
+verified — but do not run production on a superuser afterwards.)
 
 ## Post-cutover
 
