@@ -31,6 +31,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<PermissionDefinitionEntity> PermissionDefinitions => Set<PermissionDefinitionEntity>();
     public DbSet<ScopeEntity> Scopes => Set<ScopeEntity>();
     public DbSet<RoleAssignmentEntity> RoleAssignments => Set<RoleAssignmentEntity>();
+    public DbSet<SodRuleEntity> SodRules => Set<SodRuleEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -164,6 +165,14 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(x => x.TenantId);
             e.HasIndex(x => x.UserId);
             e.HasIndex(x => x.ScopeId);
+        });
+
+        modelBuilder.Entity<SodRuleEntity>(e =>
+        {
+            // Per-tenant separation-of-duty rules (P3).
+            e.ToTable("sod_rules");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
         });
     }
 }
@@ -406,4 +415,17 @@ public sealed class RoleAssignmentEntity
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
+}
+
+/// <summary>A per-tenant separation-of-duty rule (P3): no single subject may hold
+/// both <see cref="PermissionA"/> and <see cref="PermissionB"/>. Mirrors
+/// <see cref="SodRule"/>.</summary>
+public sealed class SodRuleEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string PermissionA { get; set; } = "";
+    public string PermissionB { get; set; } = "";
+    public bool Active { get; set; } = true;
 }
