@@ -110,6 +110,8 @@ if (postgres is not null)
     var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
     using var db = factory.CreateDbContext();
     SchemaBootstrap.Apply(db);
+    // Mirror the code permission catalog into permission_definitions (ADR 0019).
+    PermissionCatalogSync.Apply(db);
 }
 
 // Security response headers on every response. This service serves both the JSON

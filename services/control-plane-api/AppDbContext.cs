@@ -28,6 +28,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<BootstrapTokenEntity> BootstrapTokens => Set<BootstrapTokenEntity>();
     public DbSet<ConfigEntity> Configs => Set<ConfigEntity>();
     public DbSet<AuditEntity> Audit => Set<AuditEntity>();
+    public DbSet<PermissionDefinitionEntity> PermissionDefinitions => Set<PermissionDefinitionEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -132,6 +133,14 @@ public sealed class AppDbContext : DbContext
             e.ToTable("audit");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<PermissionDefinitionEntity>(e =>
+        {
+            // A global (non-tenant) reference table mirroring the code catalog
+            // (Permissions.All), reconciled at startup by PermissionCatalogSync.
+            e.ToTable("permission_definitions");
+            e.HasKey(x => x.Key);
         });
     }
 }
@@ -312,4 +321,25 @@ public sealed class AuditEntity
     public string Kind { get; set; } = "";
     public string TenantId { get; set; } = "";
     public string Detail { get; set; } = "";
+}
+
+/// <summary>A row mirroring one <see cref="PermissionDefinition"/> from the code
+/// catalog (Permissions.All), reconciled at startup. The code catalog is
+/// authoritative; this table exists so the admin UI can list/annotate permissions
+/// and so grants can reference them. Enum-valued fields are stored as their names.
+/// <see cref="Active"/> is false when a permission was removed from the catalog.</summary>
+public sealed class PermissionDefinitionEntity
+{
+    public string Key { get; set; } = "";
+    public string Domain { get; set; } = "";
+    public string Resource { get; set; } = "";
+    public string Action { get; set; } = "";
+    public string Risk { get; set; } = "";
+    public string Capability { get; set; } = "";
+    public bool RequiresMfa { get; set; }
+    public bool RequiresFreshAuth { get; set; }
+    public bool RequiresApproval { get; set; }
+    public bool Delegable { get; set; }
+    public string Description { get; set; } = "";
+    public bool Active { get; set; } = true;
 }
