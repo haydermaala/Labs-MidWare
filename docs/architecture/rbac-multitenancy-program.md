@@ -76,6 +76,40 @@ Each slice: schema + migration → service/enforcement → tests → verify live
 
 Exit P1: staging runs entirely under `app_runtime` with `FORCE RLS`; isolation smoke proves Tenant B cannot read Tenant A rows even with app filters bypassed; rollback (swap `DATABASE_URL` back + `NO FORCE`) rehearsed.
 
+## P1 mechanism — PROVEN (validated on postgres:16, 2026-07-21)
+
+The RLS + session-GUC pattern below was verified end-to-end on a throwaway
+Postgres (no production touched). Every property held: tenant-A context sees only
+A's rows; cross-tenant insert is blocked by `WITH CHECK`; **no context ⇒ 0 rows
+(fail-closed)**; `app_runtime` cannot bypass (no superuser/BYPASSRLS). The real
+P1 migration builds directly from this.
+
+```sql
+-- Least-privilege runtime role — the app connects as this, NOT the owner.
+CREATE ROLE app_runtime LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+GRANT SELECT, INSERT, UPDATE, DELETE ON <tenant_table> TO app_runtime;
+
+ALTER TABLE <tenant_table> ENABLE ROW LEVEL SECURITY;
+ALTER TABLE <tenant_table> FORCE  ROW LEVEL SECURITY;   -- owner is subject too
+
+-- Single admit-current-tenant policy; deny-by-default by omission.
+-- current_setting(..., true) => NULL when unset => row invisible (fail-closed).
+CREATE POLICY <t>_tenant_isolation ON <tenant_table>
+  USING      (tenant_id = current_setting('app.tenant_id', true))
+  WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
+```
+
+App side: a per-request DB interceptor runs `SET LOCAL app.tenant_id = '<verified>'`
+inside the request transaction, sourced ONLY from the authenticated session's
+verified membership (never a request-supplied id). `SET LOCAL` is transaction-scoped,
+so pooled connections never leak context across requests.
+
+**Next session (P1 build):** wire this into an EF migration for all tenant tables,
+add the Npgsql interceptor from `TenantContext`, the migration-gate test, and the
+staging→shadow→canary→prod rollout (restore-drill first; keep app-layer filters).
+Do NOT merge the RLS migration to main until the staged prod cutover — Railway's
+startup `Database.Migrate()` would apply it to prod on merge.
+
 ## Open (resolve during P1/P2, not blocking)
 
 - Named holders of platform Root/break-glass and Clinical Approver roles (§11 OPEN carried from `validation-strategy.md`).
