@@ -51,6 +51,9 @@ else
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<MembershipService>();
 builder.Services.AddSingleton<BillingService>();
+// Central authorization engine (P2). Registered now; endpoints move onto it in a
+// shadow phase before it becomes the sole gate (see ADR 0019).
+builder.Services.AddSingleton<IAuthorizationEngine, AuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.
