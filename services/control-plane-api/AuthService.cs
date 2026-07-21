@@ -43,6 +43,10 @@ public sealed class AuthService
 
     private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(7);
 
+    /// <summary>How long an authentication stays "fresh" for step-up-gated
+    /// permissions before a re-auth is required (ADR 0019).</summary>
+    public static readonly TimeSpan StepUpWindow = TimeSpan.FromMinutes(10);
+
     private readonly IDbContextFactory<AppDbContext> _factory;
     private readonly TimeProvider _clock;
     private readonly PasswordHasher<UserEntity> _hasher = new();
@@ -132,12 +136,12 @@ public sealed class AuthService
             return new LoginOutcome(true, mfaToken, null);
         }
 
-        var result = CreateSession(db, user);
+        var result = CreateSession(db, user, mfaSatisfied: false);
         db.SaveChanges();
         return new LoginOutcome(false, null, result);
     }
 
-    private LoginResult CreateSession(AppDbContext db, UserEntity user)
+    private LoginResult CreateSession(AppDbContext db, UserEntity user, bool mfaSatisfied)
     {
         var token = "ses_" + Ids.NewSecret();
         var now = _clock.GetUtcNow();
@@ -149,14 +153,18 @@ public sealed class AuthService
             CreatedAt = now,
             ExpiresAt = now.Add(SessionLifetime),
             LastSeenAt = now,
+            LastAuthenticatedAt = now,
+            MfaSatisfied = mfaSatisfied,
         };
         db.UserSessions.Add(session);
         Audit(db, "auth.login", user.Id);
         return new LoginResult(token, session.ExpiresAt, View(user));
     }
 
-    /// <summary>Resolve a session token to its user; null if unknown/expired/revoked.</summary>
-    public (UserView User, string SessionId)? Authenticate(string sessionToken)
+    /// <summary>Resolve a session token to its user + step-up signals (whether MFA
+    /// was completed and whether the authentication is still fresh); null if
+    /// unknown/expired/revoked.</summary>
+    public (UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? Authenticate(string sessionToken)
     {
         using var db = _factory.CreateDbContext();
         var hash = HashToken(sessionToken);
@@ -172,13 +180,46 @@ public sealed class AuthService
         {
             return null;
         }
+        var freshAuth = now - session.LastAuthenticatedAt <= StepUpWindow;
         // Touch last-seen at most once a minute to avoid a write per request.
         if (now - session.LastSeenAt > TimeSpan.FromMinutes(1))
         {
             session.LastSeenAt = now;
             db.SaveChanges();
         }
-        return (View(user), session.Id);
+        return (View(user), session.Id, session.MfaSatisfied, freshAuth);
+    }
+
+    /// <summary>Re-verify the caller's credentials to refresh a session's fresh-auth
+    /// window (step-up) for high-risk actions. Requires the password, plus a current
+    /// MFA code when the account has MFA enabled. Returns false on any failure.</summary>
+    public bool StepUp(string sessionId, string userId, string password, string? code)
+    {
+        using var db = _factory.CreateDbContext();
+        var user = db.Users.FirstOrDefault(u => u.Id == userId && u.Active);
+        if (user is null ||
+            _hasher.VerifyHashedPassword(user, user.PasswordHash, password) == PasswordVerificationResult.Failed)
+        {
+            return false;
+        }
+        var mfaEnabled = user.MfaEnabledAt is not null;
+        if (mfaEnabled && (user.MfaSecret is null || code is null || !Totp.Verify(user.MfaSecret, code, _clock.GetUtcNow())))
+        {
+            return false;
+        }
+        var session = db.UserSessions.FirstOrDefault(s => s.Id == sessionId && s.UserId == userId && s.RevokedAt == null);
+        if (session is null)
+        {
+            return false;
+        }
+        session.LastAuthenticatedAt = _clock.GetUtcNow();
+        if (mfaEnabled)
+        {
+            session.MfaSatisfied = true;
+        }
+        Audit(db, "auth.step_up", userId);
+        db.SaveChanges();
+        return true;
     }
 
     /// <summary>Revoke one session (logout). True if it existed and was active.</summary>
@@ -309,7 +350,7 @@ public sealed class AuthService
             db.SaveChanges();
             return null;
         }
-        var result = CreateSession(db, user);
+        var result = CreateSession(db, user, mfaSatisfied: true);
         db.SaveChanges();
         return result;
     }
@@ -334,7 +375,7 @@ public sealed class AuthService
         stored.UsedAt = _clock.GetUtcNow();
         var user = db.Users.First(u => u.Id == row.UserId);
         Audit(db, "auth.mfa_recovery_used", user.Id);
-        var result = CreateSession(db, user);
+        var result = CreateSession(db, user, mfaSatisfied: true);
         db.SaveChanges();
         return result;
     }

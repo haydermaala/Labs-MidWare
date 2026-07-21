@@ -47,15 +47,27 @@ P2 changes **no one's access**. Each permission is tagged with the
 role × every permission). This makes the catalog a faithful re-expression of
 today's authZ, not a redesign of it.
 
-### 4. Rollout: map → shadow → enforce
-The engine is registered in DI now but is **not yet the gate**. Next increments:
-1. **Map** each endpoint's current predicate to its permission key.
-2. **Shadow**: call the engine alongside the legacy check at each endpoint, log
-   any disagreement (there should be none, by the parity tests), and confirm in
-   staging.
-3. **Enforce**: replace the legacy checks with `Authorize(...)`, surface the
-   reason on 403s, and add the step-up (`RequiresFreshAuth`) flow for high-risk
-   actions.
+### 4. Rollout: map → shadow → enforce (done)
+1. **Map** — every tenant-scoped endpoint declares its permission (the `Forbidden`
+   helper takes a `PermissionDefinition`).
+2. **Shadow** — the engine ran alongside the legacy check, logging disagreements
+   (zero, by the parity tests).
+3. **Enforce** — the engine is now the gate. `Forbidden` returns the engine's
+   decision with a status split that preserves anti-enumeration:
+   - unauthenticated **or a non-member of the tenant** → `401` (indistinguishable
+     from "no such tenant", so cross-tenant probes learn nothing);
+   - a **member** whose role lacks the permission, or who needs step-up → `403`
+     with the engine's `Reason` (safe — they already know it is their tenant, and
+     the reason drives the UI).
+
+**Step-up (`RequiresFreshAuth`).** Sessions carry `LastAuthenticatedAt` +
+`MfaSatisfied`. `Authenticate` reports `FreshAuth` (within `AuthService.StepUpWindow`,
+10 min) and `MfaSatisfied`, which `Forbidden` passes to the engine. High-risk
+permissions (decommission, change-role, remove, deactivate, billing manage) thus
+require a recent re-auth; `POST /api/auth/step-up` re-verifies the password (+ an
+MFA code when enabled) and refreshes the window. The operator console must handle
+a `403` on those actions by prompting step-up — a **frontend follow-up**, so this
+branch is not merged to production until that lands.
 
 ## Consequences
 
@@ -75,10 +87,11 @@ The engine is registered in DI now but is **not yet the gate**. Next increments:
   **scopes** (tenant → site → lab → department) — **P3**.
 - **Separation of duty** (author≠approver, requester≠approver) as a rules engine
   — **P3** (§9). The `RequiresApproval` flag reserves the hook.
-- The `permission_definitions` table + seed migration and the endpoint
-  shadow/enforce wiring — next P2 increments.
-- Step-up (`RequiresFreshAuth`) session plumbing — enforced when endpoints move
-  onto the engine.
+- The operator-console step-up flow (handle a `403` on a fresh-auth-gated action
+  by prompting re-auth against `POST /api/auth/step-up`) — a **frontend
+  follow-up** before this branch merges to production.
+- `RequiresMfa`-gated permissions — the signal (`MfaSatisfied`) is plumbed, but no
+  catalog permission requires MFA yet; set it when an action warrants it.
 
 ## Alternatives considered
 

@@ -163,9 +163,10 @@ public sealed class MemberAdminTests : IClassFixture<EmailApiFactory>
         await Grant(techId, tenant, "technician");
         var tech = Session(techSession);
 
-        Assert.Equal(HttpStatusCode.Unauthorized, (await tech.PostAsJsonAsync(
+        // A member who lacks the capability is refused with 403 (non-members get 401).
+        Assert.Equal(HttpStatusCode.Forbidden, (await tech.PostAsJsonAsync(
             $"/api/tenants/{tenant}/members/{ownerId}/role", new { role = "read-only" })).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized,
+        Assert.Equal(HttpStatusCode.Forbidden,
             (await tech.PostAsync($"/api/tenants/{tenant}/members/{ownerId}/remove", null)).StatusCode);
     }
 

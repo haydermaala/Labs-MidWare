@@ -51,8 +51,8 @@ else
 builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<MembershipService>();
 builder.Services.AddSingleton<BillingService>();
-// Central authorization engine (P2). Registered now; endpoints move onto it in a
-// shadow phase before it becomes the sole gate (see ADR 0019).
+// Central authorization engine (P2, ADR 0019) — the authoritative gate for
+// tenant-scoped endpoints.
 builder.Services.AddSingleton<IAuthorizationEngine, AuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
@@ -155,7 +155,7 @@ app.UseRateLimiter();
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];
 
-// Central authorization engine, run in shadow alongside the legacy role checks (ADR 0019).
+// Central authorization engine — the gate for tenant-scoped endpoints (ADR 0019).
 var authzEngine = app.Services.GetRequiredService<IAuthorizationEngine>();
 
 bool IsAdmin(HttpRequest req) =>
@@ -201,7 +201,7 @@ app.MapGet("/api/tenants", (IControlPlaneStore store, HttpRequest req) =>
 // A tenant's general settings (any member of the tenant may read).
 app.MapGet("/api/tenants/{tenantId}/settings", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.TenantSettingsView)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantSettingsView) is { } denied) return denied;
     var tenant = store.FindTenant(tenantId);
     return tenant is null ? Results.NotFound() : Results.Json(tenant);
 });
@@ -209,7 +209,7 @@ app.MapGet("/api/tenants/{tenantId}/settings", (string tenantId, IControlPlaneSt
 // Rename a tenant (owner only). Name is trimmed and length-bounded.
 app.MapPost("/api/tenants/{tenantId}/rename", (string tenantId, RenameTenantRequest body, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.TenantRename)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantRename) is { } denied) return denied;
     var name = (body.Name ?? string.Empty).Trim();
     if (name.Length is < 2 or > 120)
     {
@@ -222,21 +222,21 @@ app.MapPost("/api/tenants/{tenantId}/rename", (string tenantId, RenameTenantRequ
 // Deactivate a tenant (soft): stops new enrollment; data and audit retained.
 app.MapPost("/api/tenants/{tenantId}/deactivate", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.TenantDeactivate)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantDeactivate) is { } denied) return denied;
     return store.DeactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
 });
 
 // Reactivate a previously deactivated tenant.
 app.MapPost("/api/tenants/{tenantId}/reactivate", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.TenantReactivate)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantReactivate) is { } denied) return denied;
     return store.ReactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
 });
 
 // Issue a short-lived, single-use bootstrap token an operator hands to a gateway.
 app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, BillingService billing, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.FleetGatewayEnroll)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetGatewayEnroll) is { } denied) return denied;
     // Entitlement enforced server-side: only active gateways count toward quota.
     var activeGateways = store.GatewaysFor(tenantId).Count(g => g.Active);
     if (!billing.CanAddGateway(tenantId, activeGateways))
@@ -256,7 +256,7 @@ app.MapPost("/api/tenants/{tenantId}/enrollment-tokens", (string tenantId, ICont
 // Tenant-scoped gateway inventory (never returns another tenant's gateways).
 app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.FleetGatewayView)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetGatewayView) is { } denied) return denied;
     if (!store.TenantExists(tenantId)) return Results.NotFound();
     return Results.Json(store.GatewaysFor(tenantId));
 });
@@ -265,7 +265,7 @@ app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneSt
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/decommission",
     (string tenantId, string gatewayId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.FleetGatewayDecommission)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetGatewayDecommission) is { } denied) return denied;
     return store.DecommissionGateway(tenantId, gatewayId) ? Results.NoContent() : Results.NotFound();
 });
 
@@ -273,7 +273,7 @@ app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/decommission",
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
     (string tenantId, string gatewayId, JsonElement settings, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.FleetConfigPublish)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetConfigPublish) is { } denied) return denied;
     var view = store.PublishConfig(tenantId, gatewayId, settings.GetRawText());
     return view is null ? Results.NotFound() : Results.Json(view);
 });
@@ -281,7 +281,7 @@ app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
 // Tenant audit log (any member role; platform admin).
 app.MapGet("/api/tenants/{tenantId}/audit", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.AuditLogView)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.AuditLogView) is { } denied) return denied;
     if (!store.TenantExists(tenantId)) return Results.NotFound();
     return Results.Json(store.AuditFor(tenantId));
 });
@@ -306,7 +306,7 @@ app.MapPost("/api/admin/memberships", (GrantMembershipRequest body, MembershipSe
 
 app.MapGet("/api/tenants/{tenantId}/members", (string tenantId, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.MembersMemberView)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberView) is { } denied) return denied;
     return Results.Json(members.MembersOf(tenantId));
 });
 
@@ -337,21 +337,21 @@ IResult ChangeOutcome(MembershipService.ChangeResult result) => result switch
 app.MapPost("/api/tenants/{tenantId}/members/{userId}/role",
     (string tenantId, string userId, ChangeRoleRequest body, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.MembersMemberChangeRole)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberChangeRole) is { } denied) return denied;
     return ChangeOutcome(members.ChangeRole(tenantId, userId, body.Role, ActorRole(req, auth, members, tenantId)));
 });
 
 app.MapPost("/api/tenants/{tenantId}/members/{userId}/remove",
     (string tenantId, string userId, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.MembersMemberRemove)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberRemove) is { } denied) return denied;
     return ChangeOutcome(members.RemoveMember(tenantId, userId, ActorRole(req, auth, members, tenantId)));
 });
 
 app.MapPost("/api/tenants/{tenantId}/invitations",
     async (string tenantId, InviteRequest body, AuthService auth, MembershipService members, IEmailSender mail, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.MembersMemberInvite)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberInvite) is { } denied) return denied;
     // Inviting an owner is the same privilege grant as promoting one.
     if (body.Role == Roles.Owner && ActorRole(req, auth, members, tenantId) != Roles.Owner)
     {
@@ -376,14 +376,14 @@ app.MapPost("/api/tenants/{tenantId}/invitations",
 
 app.MapGet("/api/tenants/{tenantId}/invitations", (string tenantId, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.MembersInvitationView)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersInvitationView) is { } denied) return denied;
     return Results.Json(members.InvitationsFor(tenantId));
 });
 
 app.MapPost("/api/tenants/{tenantId}/invitations/{invitationId}/revoke",
     (string tenantId, string invitationId, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.MembersInvitationRevoke)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersInvitationRevoke) is { } denied) return denied;
     return members.RevokeInvitation(tenantId, invitationId) ? Results.NoContent() : Results.NotFound();
 });
 
@@ -405,7 +405,7 @@ app.MapPost("/api/invitations/accept", (TokenRequest body, AuthService auth, Mem
 // Session resolution: `Authorization: Bearer ses_…` (SPA) or the `lc_session`
 // HttpOnly cookie (same-site browser use). Cookie hardening to __Host- prefix +
 // CSRF double-submit lands when the web app is served same-origin (Phase H).
-(UserView User, string SessionId)? CurrentUser(HttpRequest req, AuthService auth)
+(UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? CurrentUser(HttpRequest req, AuthService auth)
 {
     var header = req.Headers.Authorization.ToString();
     string? token = null;
@@ -423,52 +423,43 @@ app.MapPost("/api/invitations/accept", (TokenRequest body, AuthService auth, Mem
 // Tenant-scoped authorization: the platform admin token passes everything;
 // otherwise the session user's membership role in THAT tenant must satisfy the
 // capability. Checked server-side on every tenant operation (no client claims).
-bool AuthorizedInTenant(HttpRequest req, AuthService auth, MembershipService members,
+// Authorization gate for a tenant-scoped endpoint (ADR 0019). Returns null when
+// the request is permitted, or the IResult to return when it is denied. The
+// authorization engine is now authoritative.
+//
+// Status choice preserves anti-enumeration: an unauthenticated caller OR a
+// non-member gets 401 — indistinguishable from "no such tenant", so it never
+// reveals a tenant's existence or a user's (lack of) membership across tenants
+// (the cross-tenant IDOR case). A caller who IS a member but whose role lacks the
+// permission (or who needs step-up) gets 403 with the engine's reason — safe,
+// since they already know it is their tenant, and the reason drives the UI (e.g.
+// prompting re-authentication for a fresh-auth-gated action).
+IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     string tenantId, PermissionDefinition permission)
 {
     if (IsAdmin(req))
     {
-        return true;
+        return null;
     }
     var current = CurrentUser(req, auth);
     if (current is null)
     {
-        return false;
+        return Results.Unauthorized();
     }
     var role = members.RoleIn(current.Value.User.Id, tenantId);
     if (role is null)
     {
-        return false;
+        return Results.Unauthorized(); // non-member: indistinguishable from no access
     }
 
-    // Legacy decision — still the enforced one during the shadow phase (ADR 0019 §4).
-    var legacy = LegacyCapabilityAllows(permission.Capability, role);
-
-    // Shadow: evaluate the engine on the same (role, permission) and log any
-    // disagreement. Step-up gates are treated as satisfied until session plumbing
-    // lands, so this validates the endpoint→permission MAPPING against the legacy
-    // predicate — a mismatch flags a mis-mapped endpoint. The engine does not gate
-    // the request yet.
     var decision = authzEngine.Authorize(new AuthorizationRequest(
-        [role], permission.Key, MfaSatisfied: true, FreshAuth: true, ApprovalGranted: true));
-    if (decision.IsAllowed != legacy)
-    {
-        AuthzLog.ShadowMismatch(app.Logger, permission.Key, role, tenantId, legacy, decision.IsAllowed, decision.Reason);
-    }
-    return legacy;
+        [role], permission.Key,
+        MfaSatisfied: current.Value.MfaSatisfied,
+        FreshAuth: current.Value.FreshAuth));
+    return decision.IsAllowed
+        ? null
+        : Results.Json(new { error = decision.Reason }, statusCode: StatusCodes.Status403Forbidden);
 }
-
-// Bridges a permission's legacy capability to the existing Roles predicate — the
-// behaviour still enforced while the engine runs in shadow.
-static bool LegacyCapabilityAllows(LegacyCapability capability, string role) => capability switch
-{
-    LegacyCapability.View => Roles.CanView(role),
-    LegacyCapability.ManageFleet => Roles.CanManageFleet(role),
-    LegacyCapability.ManageUsers => Roles.CanManageUsers(role),
-    LegacyCapability.ManageTenant => Roles.CanManageTenant(role),
-    LegacyCapability.ManageBilling => Roles.CanManageBilling(role),
-    _ => false,
-};
 
 void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>
     res.Cookies.Append("lc_session", token, new CookieOptions
@@ -585,6 +576,21 @@ app.MapGet("/api/auth/me", (AuthService auth, HttpRequest req) =>
     return current is null ? Results.Unauthorized() : Results.Json(current.Value.User);
 });
 
+// Step-up: re-verify credentials to refresh this session's fresh-auth window for
+// high-risk (RequiresFreshAuth) permissions. Requires the password, plus a current
+// MFA code when the account has MFA enabled. Rate-limited like login.
+app.MapPost("/api/auth/step-up", (StepUpRequest body, AuthService auth, HttpRequest req) =>
+{
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    return auth.StepUp(current.Value.SessionId, current.Value.User.Id, body.Password ?? string.Empty, body.Code)
+        ? Results.NoContent()
+        : Results.Unauthorized();
+}).RequireRateLimiting("login");
+
 app.MapPost("/api/auth/logout", (AuthService auth, HttpRequest req, HttpResponse res) =>
 {
     var current = CurrentUser(req, auth);
@@ -683,7 +689,7 @@ app.MapGet("/api/billing/plans", () => Results.Json(Plans.All.Select(p => new
 // appear in this payload.
 app.MapGet("/api/tenants/{tenantId}/billing", (string tenantId, BillingService billing, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.BillingSubscriptionView)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.BillingSubscriptionView) is { } denied) return denied;
     return Results.Json(new
     {
         entitlements = billing.EntitlementsFor(tenantId),
@@ -696,7 +702,7 @@ app.MapGet("/api/tenants/{tenantId}/billing", (string tenantId, BillingService b
 app.MapPost("/api/tenants/{tenantId}/billing/checkout",
     async (string tenantId, CheckoutRequest body, IBillingProvider provider, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.BillingSubscriptionManage)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.BillingSubscriptionManage) is { } denied) return denied;
     if (body.PlanId is null || !Plans.IsKnown(body.PlanId) || body.PlanId == Plans.Trial)
     {
         return Results.BadRequest(new { error = "unknown or non-purchasable plan" });
@@ -709,7 +715,7 @@ app.MapPost("/api/tenants/{tenantId}/billing/checkout",
 app.MapPost("/api/tenants/{tenantId}/billing/portal",
     async (string tenantId, IBillingProvider provider, BillingService billing, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (!AuthorizedInTenant(req, auth, members, tenantId, Permissions.BillingPortalOpen)) return Results.Unauthorized();
+    if (Forbidden(req, auth, members, tenantId, Permissions.BillingPortalOpen) is { } denied) return denied;
     var customerId = billing.ProviderCustomerIdFor(tenantId);
     var redirect = await provider.CreatePortalAsync(tenantId, customerId);
     return Results.Json(new { url = redirect.Url });
@@ -821,6 +827,8 @@ internal sealed record ForgotPasswordRequest(string Email);
 
 /// <summary>Completes a password reset.</summary>
 internal sealed record ResetPasswordRequest(string Token, string NewPassword);
+
+internal sealed record StepUpRequest(string? Password, string? Code);
 
 /// <summary>Platform-admin membership grant (tenant bootstrap).</summary>
 internal sealed record GrantMembershipRequest(string UserId, string TenantId, string Role);

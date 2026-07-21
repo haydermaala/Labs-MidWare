@@ -181,6 +181,15 @@ public sealed class UserSessionEntity
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
+
+    /// <summary>When the user last proved their credentials for this session
+    /// (login or step-up). Drives the fresh-auth window for high-risk permissions
+    /// (ADR 0019).</summary>
+    public DateTimeOffset LastAuthenticatedAt { get; set; }
+
+    /// <summary>Whether MFA was completed for this session (login via MFA, or a
+    /// step-up that included an MFA code).</summary>
+    public bool MfaSatisfied { get; set; }
 }
 
 /// <summary>A single-use, short-lived account token (email verification or
