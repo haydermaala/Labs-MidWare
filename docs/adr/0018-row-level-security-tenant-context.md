@@ -110,6 +110,14 @@ the P1 coverage set at the ten known tenant tables. The gate had its teeth prove
 indexes (`AppDbContext.OnModelCreating`).
 
 ### 5. Rollout (never a one-step prod change)
+Executable procedure: **[docs/operations/rls-rollout.md](../operations/rls-rollout.md)**;
+role provisioning: `scripts/provision-app-runtime.sh`. Migrations need DDL/owner
+rights the runtime role lacks, so the app migrates via a separate
+`MIGRATION_DATABASE_URL` (owner) and serves runtime via `DATABASE_URL`
+(`app_runtime`) — `DatabaseConfig.ResolveMigrationConnectionString`, falling back
+to the runtime connection when unset so single-role deploys are unchanged.
+
+
 `restore-drill.sh` demonstrated on a prod backup → create `app_runtime` +
 enable RLS in **staging** behind a flag → **shadow-log** any policy denials
 (catches a missed `SET LOCAL`) → **canary** → repoint prod `DATABASE_URL` to

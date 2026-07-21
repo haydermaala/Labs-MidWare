@@ -27,6 +27,23 @@ public static class DatabaseConfig
         return Normalize(raw.Trim());
     }
 
+    /// <summary>
+    /// The connection used for the startup schema migration, which needs DDL/owner
+    /// rights. Under Row-Level Security the runtime connects as a least-privilege
+    /// role that cannot ALTER TABLE / CREATE POLICY, so migrations must run as a
+    /// separate owner role (ADR 0018 §Rollout). Precedence: MIGRATION_DATABASE_URL,
+    /// then ConnectionStrings:PostgresMigration, then the runtime connection
+    /// (<see cref="ResolveConnectionString"/>) so single-role deployments are
+    /// unchanged. Null only when no database is configured at all.
+    /// </summary>
+    public static string? ResolveMigrationConnectionString(IConfiguration config)
+    {
+        var raw = config["MIGRATION_DATABASE_URL"] ?? config.GetConnectionString("PostgresMigration");
+        return string.IsNullOrWhiteSpace(raw)
+            ? ResolveConnectionString(config)
+            : Normalize(raw.Trim());
+    }
+
     /// <summary>Convert a postgres:// URL to an Npgsql key=value string; pass others through.</summary>
     public static string Normalize(string raw)
     {

@@ -103,9 +103,14 @@ var app = builder.Build();
 // release step (see ADR 0013).
 if (postgres is not null)
 {
-    using var scope = app.Services.CreateScope();
-    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-    using var db = factory.CreateDbContext();
+    // Migrations need DDL/owner rights. Under RLS the runtime factory connects as
+    // a least-privilege role that cannot ALTER TABLE / CREATE POLICY, so the
+    // startup migration uses a dedicated migration connection (owner role) when one
+    // is configured, falling back to the runtime connection otherwise (ADR 0018
+    // §Rollout). This is the only place that connects for DDL.
+    var migrationConn = DatabaseConfig.ResolveMigrationConnectionString(app.Configuration);
+    var migrationOptions = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(migrationConn).Options;
+    using var db = new AppDbContext(migrationOptions);
     SchemaBootstrap.Apply(db);
 }
 
