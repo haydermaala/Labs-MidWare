@@ -57,6 +57,7 @@ builder.Services.AddSingleton<BillingService>();
 builder.Services.AddSingleton<IAuthorizationEngine, AuthorizationEngine>();
 builder.Services.AddSingleton<IScopedAuthorizationEngine, ScopedAuthorizationEngine>();
 builder.Services.AddSingleton<ScopeService>();
+builder.Services.AddSingleton<RoleGrantService>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.
@@ -402,6 +403,85 @@ app.MapPost("/api/invitations/accept", (TokenRequest body, AuthService auth, Mem
     return membership is null
         ? Results.BadRequest(new { error = "invalid, expired, or mismatched invitation" })
         : Results.Json(membership);
+});
+
+// --- P3: scoped role grants + custom roles (ADR 0020) ----------------------
+// A grant is a role held at a scope (role_assignments). Creating/revoking one is
+// a member-admin action (same permission as changing a role) and is bounded by
+// delegation limits + separation-of-duty in RoleGrantService. The scope-aware
+// engine consuming these assignments is a later slice; these endpoints only
+// author the data.
+IResult GrantOutcomeResult(string tenantId, RoleGrantService.GrantResult r) => r.Outcome switch
+{
+    RoleGrantService.GrantOutcome.Ok =>
+        Results.Created($"/api/tenants/{tenantId}/role-assignments/{r.Assignment!.Id}", r.Assignment),
+    RoleGrantService.GrantOutcome.UnknownScope =>
+        Results.BadRequest(new { error = "unknown scope in this tenant" }),
+    RoleGrantService.GrantOutcome.UnknownRole =>
+        Results.BadRequest(new { error = "unknown role" }),
+    RoleGrantService.GrantOutcome.DelegationDenied =>
+        Results.Json(new { error = "you cannot delegate these permissions", permissions = r.Offending },
+            statusCode: StatusCodes.Status403Forbidden),
+    RoleGrantService.GrantOutcome.SodViolation =>
+        Results.Conflict(new { error = "a separation-of-duty rule would be violated", rules = r.Offending }),
+    _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
+};
+
+IResult CustomRoleOutcomeResult(string tenantId, RoleGrantService.CustomRoleResult r) => r.Outcome switch
+{
+    RoleGrantService.CustomRoleOutcome.Ok =>
+        Results.Created($"/api/tenants/{tenantId}/custom-roles/{r.Role!.RoleKey}", r.Role),
+    RoleGrantService.CustomRoleOutcome.ReservedRoleKey =>
+        Results.BadRequest(new { error = "role key collides with a baseline role" }),
+    RoleGrantService.CustomRoleOutcome.RoleKeyTaken =>
+        Results.Conflict(new { error = "a custom role with this key already exists" }),
+    RoleGrantService.CustomRoleOutcome.NoValidPermissions =>
+        Results.BadRequest(new { error = "at least one known permission key is required" }),
+    RoleGrantService.CustomRoleOutcome.DelegationDenied =>
+        Results.Json(new { error = "you cannot delegate these permissions", permissions = r.Offending },
+            statusCode: StatusCodes.Status403Forbidden),
+    _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
+};
+
+app.MapGet("/api/tenants/{tenantId}/role-assignments",
+    (string tenantId, string? userId, AuthService auth, MembershipService members, RoleGrantService grants, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberView) is { } denied) return denied;
+    return Results.Json(grants.AssignmentsFor(tenantId, userId));
+});
+
+app.MapPost("/api/tenants/{tenantId}/role-assignments",
+    (string tenantId, GrantRoleRequest body, AuthService auth, MembershipService members, RoleGrantService grants, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberChangeRole) is { } denied) return denied;
+    var grantorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return GrantOutcomeResult(tenantId, grants.Grant(
+        tenantId, grantorUserId, ActorRole(req, auth, members, tenantId),
+        body.UserId, body.Role, body.ScopeId, body.ExpiresAt));
+});
+
+app.MapDelete("/api/tenants/{tenantId}/role-assignments/{assignmentId}",
+    (string tenantId, string assignmentId, AuthService auth, MembershipService members, RoleGrantService grants, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberChangeRole) is { } denied) return denied;
+    return grants.Revoke(tenantId, assignmentId) ? Results.NoContent() : Results.NotFound();
+});
+
+app.MapGet("/api/tenants/{tenantId}/custom-roles",
+    (string tenantId, AuthService auth, MembershipService members, RoleGrantService grants, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberView) is { } denied) return denied;
+    return Results.Json(grants.CustomRolesFor(tenantId));
+});
+
+app.MapPost("/api/tenants/{tenantId}/custom-roles",
+    (string tenantId, CreateCustomRoleRequest body, AuthService auth, MembershipService members, RoleGrantService grants, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberChangeRole) is { } denied) return denied;
+    var creatorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return CustomRoleOutcomeResult(tenantId, grants.CreateCustomRole(
+        tenantId, creatorUserId, ActorRole(req, auth, members, tenantId),
+        body.RoleKey, body.Name, body.PermissionKeys ?? []));
 });
 
 // --- identity: users + sessions (Phase C1) ---------------------------------
@@ -843,6 +923,12 @@ internal sealed record InviteRequest(string Email, string Role);
 
 /// <summary>Change an existing member's role.</summary>
 internal sealed record ChangeRoleRequest(string Role);
+
+/// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
+internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);
+
+/// <summary>Define a tenant custom role from a set of permission keys (P3).</summary>
+internal sealed record CreateCustomRoleRequest(string RoleKey, string Name, IReadOnlyList<string>? PermissionKeys);
 
 /// <summary>A created invitation plus whether the provider accepted its email.</summary>
 internal sealed record InvitationCreatedResponse(InvitationView Invitation, bool EmailDelivered);
