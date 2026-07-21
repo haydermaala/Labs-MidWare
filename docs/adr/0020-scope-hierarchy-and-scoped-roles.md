@@ -44,11 +44,17 @@ root assignment during migration). Expiry (and `RevokedAt`) are honoured at
 evaluation time. *Still to wire:* the write/grant API (with delegation limits,
 §3), the memberships→root-assignment backfill, and consumption by the engine (§4).
 
-### 3. Custom roles + delegation (later slice)
-Tenant-defined roles are a named set of permission keys, gated by a plan
-entitlement. Delegation limits: a role may only be granted permissions the
-grantor holds and that are marked `Delegable` in the catalog (P2 metadata), and
-only at or below the grantor's own scope. Baseline roles stay code-owned.
+### 3. Custom roles + delegation (model done)
+Tenant-defined roles are a named set of permission keys (`custom_roles` +
+`role_permissions`), resolved uniformly with the code-owned baseline roles by
+`RoleGrants.Grants`. Delegation (`Delegation`): a grantor may only delegate a
+permission that is `Delegable` in the catalog **and** that the grantor holds;
+`Delegation.Allowed` is the enforceable ceiling on a custom role a grantor
+defines. Scope limits (at or below the grantor's scope) come from the engine
+(§4). *Still to wire:* the create-role/grant admin API, the plan-entitlement gate,
+and the `RoleGrants`-fed engine path. Baseline `RolePermissions`/`LegacyCapability`
+stay for now (custom grants are additive); the bridge is retired when this path
+becomes the engine's sole source at merge time.
 
 ### 4. Scoped authorization engine (later slice)
 `AuthorizationEngine` gains a scope: `Authorize(subject, permission, targetScope)`
@@ -57,10 +63,12 @@ allows iff some assignment grants the permission at a scope that `Contains`
 matrix and `LegacyCapability` bridge are retired here. Behaviour is preserved for
 tenants with only the root scope (every grant is tenant-wide, i.e. today).
 
-### 5. Separation of duty (later slice)
-An `sod_rules` table of mutually-exclusive permission (or role) pairs, enforced
-statically (a subject cannot hold both) and dynamically (author ≠ approver,
-requester ≠ approver) — the P2 `RequiresApproval` hook feeds this.
+### 5. Separation of duty (model done)
+`sod_rules` (per-tenant, mutually-exclusive permission pairs). `SeparationOfDuty`
+provides the static check (`StaticViolations` for reviews, `WouldViolate` to gate
+a grant) and the dynamic check (`IsDistinctParty`: approver ≠ requester). *Still
+to wire:* enforcing `WouldViolate` in the grant path and `IsDistinctParty` in the
+approval flow that the P2 `RequiresApproval` flag marks.
 
 ## Consequences
 

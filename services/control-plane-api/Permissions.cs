@@ -101,8 +101,9 @@ public static class Permissions
     public static readonly PermissionDefinition TenantRename =
         Def("tenant", "tenant", "rename", RiskLevel.Medium, LegacyCapability.ManageTenant, "Rename the tenant.");
     public static readonly PermissionDefinition TenantDeactivate =
+        // Not delegable: tenant deactivation cannot be granted into a custom role (P3 §3).
         Def("tenant", "tenant", "deactivate", RiskLevel.Critical, LegacyCapability.ManageTenant,
-            "Deactivate the tenant (stops enrollment; retains data).", requiresFreshAuth: true);
+            "Deactivate the tenant (stops enrollment; retains data).", requiresFreshAuth: true, delegable: false);
     public static readonly PermissionDefinition TenantReactivate =
         Def("tenant", "tenant", "reactivate", RiskLevel.Medium, LegacyCapability.ManageTenant, "Reactivate a deactivated tenant.");
 

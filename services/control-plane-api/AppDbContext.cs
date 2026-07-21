@@ -32,6 +32,8 @@ public sealed class AppDbContext : DbContext
     public DbSet<ScopeEntity> Scopes => Set<ScopeEntity>();
     public DbSet<RoleAssignmentEntity> RoleAssignments => Set<RoleAssignmentEntity>();
     public DbSet<SodRuleEntity> SodRules => Set<SodRuleEntity>();
+    public DbSet<CustomRoleEntity> CustomRoles => Set<CustomRoleEntity>();
+    public DbSet<RolePermissionEntity> RolePermissions => Set<RolePermissionEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -171,6 +173,24 @@ public sealed class AppDbContext : DbContext
         {
             // Per-tenant separation-of-duty rules (P3).
             e.ToTable("sod_rules");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<CustomRoleEntity>(e =>
+        {
+            // Tenant-defined roles (P3). (TenantId, RoleKey) uniqueness is enforced
+            // in the (future) create-role service; single-column index here to avoid
+            // a composite array that trips CA1861 in generated migrations.
+            e.ToTable("custom_roles");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<RolePermissionEntity>(e =>
+        {
+            // A custom role's granted permissions (P3).
+            e.ToTable("role_permissions");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TenantId);
         });
@@ -428,4 +448,26 @@ public sealed class SodRuleEntity
     public string PermissionA { get; set; } = "";
     public string PermissionB { get; set; } = "";
     public bool Active { get; set; } = true;
+}
+
+/// <summary>A tenant-defined role (P3). <see cref="RoleKey"/> is unique within the
+/// tenant and must not collide with a baseline <see cref="Roles"/> name; its granted
+/// permissions are the <see cref="RolePermissionEntity"/> rows for the same key.</summary>
+public sealed class CustomRoleEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string RoleKey { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string CreatedByUserId { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>One permission granted to a custom role (P3).</summary>
+public sealed class RolePermissionEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string RoleKey { get; set; } = "";
+    public string PermissionKey { get; set; } = "";
 }
