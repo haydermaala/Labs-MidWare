@@ -20,19 +20,22 @@ namespace ControlPlane.Api.Migrations
     {
         // (table, tenant predicate) — device_credentials has no tenant_id, so it
         // authorises through its gateway; tenants authorises on its own id.
+        // EF maps entity properties to PascalCase columns (no snake_case convention),
+        // so identifiers are double-quoted (unquoted Postgres identifiers fold to
+        // lower-case and would miss the real "TenantId"/"Id"/"GatewayId" columns).
         private static readonly (string Table, string Predicate)[] Policies =
         {
-            ("gateways", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("bootstrap_tokens", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("configs", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("audit", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("memberships", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("invitations", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("subscriptions", "tenant_id = current_setting('app.tenant_id', true)"),
-            ("billing_events", "tenant_id = current_setting('app.tenant_id', true)"),
+            ("gateways", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("bootstrap_tokens", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("configs", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("audit", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("memberships", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("invitations", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("subscriptions", "\"TenantId\" = current_setting('app.tenant_id', true)"),
+            ("billing_events", "\"TenantId\" = current_setting('app.tenant_id', true)"),
             ("device_credentials",
-                "gateway_id IN (SELECT id FROM gateways WHERE tenant_id = current_setting('app.tenant_id', true))"),
-            ("tenants", "id = current_setting('app.tenant_id', true)"),
+                "\"GatewayId\" IN (SELECT \"Id\" FROM gateways WHERE \"TenantId\" = current_setting('app.tenant_id', true))"),
+            ("tenants", "\"Id\" = current_setting('app.tenant_id', true)"),
         };
 
         /// <inheritdoc />

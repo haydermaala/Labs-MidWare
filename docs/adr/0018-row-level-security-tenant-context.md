@@ -44,11 +44,16 @@ stay.
 `ENABLE` + `FORCE ROW LEVEL SECURITY` on every tenant-owned table, each with one
 deny-by-default `USING`/`WITH CHECK` policy:
 
+EF maps entity properties to **PascalCase** columns (no snake_case convention),
+so predicates must double-quote the identifiers (an unquoted `tenant_id` folds to
+lower-case and misses the real `"TenantId"` column — a bug caught and fixed
+during full-schema apply-verification, see §Verification):
+
 | Table | Policy key |
 |---|---|
-| `gateways`, `bootstrap_tokens`, `configs`, `audit`, `memberships`, `invitations`, `subscriptions`, `billing_events` | `tenant_id = current_setting('app.tenant_id', true)` |
-| `device_credentials` (no `tenant_id`; keyed by `gateway_id`) | `gateway_id IN (SELECT id FROM gateways WHERE tenant_id = current_setting('app.tenant_id', true))` |
-| `tenants` (the tenant row itself) | `id = current_setting('app.tenant_id', true)` |
+| `gateways`, `bootstrap_tokens`, `configs`, `audit`, `memberships`, `invitations`, `subscriptions`, `billing_events` | `"TenantId" = current_setting('app.tenant_id', true)` |
+| `device_credentials` (no `TenantId`; keyed by `"GatewayId"`) | `"GatewayId" IN (SELECT "Id" FROM gateways WHERE "TenantId" = current_setting('app.tenant_id', true))` |
+| `tenants` (the tenant row itself) | `"Id" = current_setting('app.tenant_id', true)` |
 
 Global/user-scoped tables (`users`, `user_sessions`, `user_tokens`,
 `recovery_codes`) are **not** tenant-scoped and are excluded from tenant RLS;
@@ -70,6 +75,20 @@ enable RLS in **staging** behind a flag → **shadow-log** any policy denials
 `DATABASE_URL` to the owner role + `NO FORCE ROW LEVEL SECURITY`. **The EF RLS
 migration is not merged to `main` until this sequence completes** — Railway runs
 `Database.Migrate()` on deploy, so a merge *is* the production cutover.
+
+## Verification
+
+Full-schema apply-verification (2026-07-21): the real EF migration script
+(`dotnet ef migrations script --idempotent`, InitialCreate → AddRowLevelSecurity)
+was applied to a throwaway `postgres:16`, then exercised as the least-privilege
+`app_runtime` role. Confirmed against the **actual** schema:
+
+- schema + RLS DDL apply cleanly (the initial lower-case `tenant_id` predicates
+  were rejected — real columns are PascalCase — and were corrected to `"TenantId"`);
+- **fail-closed** — no `app.tenant_id` ⇒ 0 rows on `gateways`/`tenants`/`device_credentials`;
+- **tenant scoping** — `app.tenant_id='t1'` shows only t1's gateway, tenant row,
+  and (via the gateway-join policy) only t1's device credential;
+- **cross-tenant INSERT** of a `t2` gateway under t1 context is rejected by `WITH CHECK`.
 
 ## Consequences
 
