@@ -104,8 +104,10 @@ public sealed class PermissionEngineTests
         var withStepUp = Engine.Authorize(Request(Roles.Owner, key, fresh: true));
 
         Assert.False(withoutStepUp.IsAllowed);
+        Assert.True(withoutStepUp.RequiresStepUp); // satisfiable by re-auth (drives the UI prompt)
         Assert.Contains("re-authentication", withoutStepUp.Reason);
         Assert.True(withStepUp.IsAllowed);
+        Assert.False(withStepUp.RequiresStepUp);
     }
 
     [Fact]

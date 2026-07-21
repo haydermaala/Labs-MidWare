@@ -14,6 +14,7 @@ import {
 import { Button, color, fontSize, space } from '@lab-connect/ui';
 import { API_BASE } from '../config';
 import { useAuth } from '../auth/AuthProvider';
+import { StepUpCancelledError, useStepUp } from '../auth/StepUpProvider';
 import { PageHeader } from './Pages';
 
 function opts(token: string): AuthOptions {
@@ -40,6 +41,7 @@ function quotaLabel(quota: number): string {
 
 export function BillingPage(): JSX.Element {
   const { token, activeTenantId, activeRole } = useAuth();
+  const { guard } = useStepUp();
   const canManage = activeRole === 'owner' || activeRole === 'billing-admin';
   const [data, setData] = useState<TenantBilling | null>(null);
   const [plans, setPlans] = useState<readonly BillingPlan[]>([]);
@@ -70,9 +72,14 @@ export function BillingPage(): JSX.Element {
     setBusy(key);
     setNotice(null);
     try {
-      const url = await get();
+      // Changing a plan is high-risk: prompts step-up re-auth if the session is stale.
+      const url = await guard(get);
       window.location.assign(url);
-    } catch {
+    } catch (e) {
+      if (e instanceof StepUpCancelledError) {
+        setBusy(null);
+        return; // operator dismissed the re-auth prompt
+      }
       setNotice('That could not be started right now. Please try again shortly.');
       setBusy(null);
     }

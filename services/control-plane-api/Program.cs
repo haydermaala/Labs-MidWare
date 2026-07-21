@@ -458,7 +458,9 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         FreshAuth: current.Value.FreshAuth));
     return decision.IsAllowed
         ? null
-        : Results.Json(new { error = decision.Reason }, statusCode: StatusCodes.Status403Forbidden);
+        : Results.Json(
+            new { error = decision.Reason, stepUp = decision.RequiresStepUp },
+            statusCode: StatusCodes.Status403Forbidden);
 }
 
 void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>

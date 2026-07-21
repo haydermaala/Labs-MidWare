@@ -29,8 +29,11 @@ public enum Decision
     Deny,
 }
 
-/// <summary>The outcome of an authorization decision, always with a reason.</summary>
-public sealed record AuthorizationResult(Decision Decision, string Reason)
+/// <summary>The outcome of an authorization decision, always with a reason.
+/// <see cref="RequiresStepUp"/> is set when the only thing standing in the way is a
+/// step-up requirement (MFA / fresh re-auth) the caller could satisfy — so the UI
+/// can prompt re-authentication rather than treat it as a hard denial.</summary>
+public sealed record AuthorizationResult(Decision Decision, string Reason, bool RequiresStepUp = false)
 {
     /// <summary>Convenience: whether the request was allowed.</summary>
     public bool IsAllowed => Decision == Decision.Allow;
@@ -38,6 +41,8 @@ public sealed record AuthorizationResult(Decision Decision, string Reason)
     internal static AuthorizationResult Allow() => new(Decision.Allow, "granted");
 
     internal static AuthorizationResult Deny(string reason) => new(Decision.Deny, reason);
+
+    internal static AuthorizationResult DenyStepUp(string reason) => new(Decision.Deny, reason, RequiresStepUp: true);
 }
 
 /// <summary>Central authorization decision point.</summary>
@@ -75,15 +80,16 @@ public sealed class AuthorizationEngine : IAuthorizationEngine
             return AuthorizationResult.Deny($"no role in [{string.Join(", ", request.Roles)}] grants '{permission.Key}'");
         }
 
-        // Role grants the permission — now enforce its step-up requirements.
+        // Role grants the permission — now enforce its step-up requirements. These
+        // are satisfiable by re-authenticating, so they flag RequiresStepUp.
         if (permission.RequiresMfa && !request.MfaSatisfied)
         {
-            return AuthorizationResult.Deny($"'{permission.Key}' requires MFA");
+            return AuthorizationResult.DenyStepUp($"'{permission.Key}' requires MFA");
         }
 
         if (permission.RequiresFreshAuth && !request.FreshAuth)
         {
-            return AuthorizationResult.Deny($"'{permission.Key}' requires recent re-authentication (step-up)");
+            return AuthorizationResult.DenyStepUp($"'{permission.Key}' requires recent re-authentication (step-up)");
         }
 
         if (permission.RequiresApproval && !request.ApprovalGranted)

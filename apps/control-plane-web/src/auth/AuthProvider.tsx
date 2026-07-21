@@ -11,6 +11,7 @@ import type { ReactNode } from 'react';
 import {
   login as apiLogin,
   logout as apiLogout,
+  stepUp as apiStepUp,
   me as apiMe,
   myMemberships,
   verifyMfa as apiVerifyMfa,
@@ -41,6 +42,8 @@ export interface AuthState {
   signIn(email: string, password: string): Promise<LoginOutcome>;
   completeMfa(mfaToken: string, code: string): Promise<void>;
   completeRecovery(mfaToken: string, recoveryCode: string): Promise<void>;
+  /** Re-verify credentials to refresh the fresh-auth window for high-risk actions. */
+  stepUp(password: string, code?: string): Promise<void>;
   signOut(): Promise<void>;
   selectTenant(tenantId: string): void;
   refresh(): Promise<void>;
@@ -146,6 +149,13 @@ export function AuthProvider({ children }: { readonly children: ReactNode }): JS
     applySession(await apiRecoverMfa(options(null), mfaToken, recoveryCode));
   }, [applySession]);
 
+  const stepUp = useCallback(async (password: string, code?: string): Promise<void> => {
+    if (token === null) {
+      throw new Error('not signed in');
+    }
+    await apiStepUp(options(token), password, code);
+  }, [token]);
+
   const signOut = useCallback(async (): Promise<void> => {
     if (token !== null) {
       try {
@@ -169,9 +179,9 @@ export function AuthProvider({ children }: { readonly children: ReactNode }): JS
 
   const value = useMemo<AuthState>(() => ({
     status, user, token, memberships, activeTenantId, activeRole,
-    signIn, completeMfa, completeRecovery, signOut, selectTenant, refresh,
+    signIn, completeMfa, completeRecovery, stepUp, signOut, selectTenant, refresh,
   }), [status, user, token, memberships, activeTenantId, activeRole,
-    signIn, completeMfa, completeRecovery, signOut, selectTenant, refresh]);
+    signIn, completeMfa, completeRecovery, stepUp, signOut, selectTenant, refresh]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

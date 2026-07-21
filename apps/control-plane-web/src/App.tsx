@@ -7,6 +7,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { color, space } from '@lab-connect/ui';
 import { AuthProvider, useAuth } from './auth/AuthProvider';
+import { StepUpProvider } from './auth/StepUpProvider';
 import { SignInPage } from './auth/SignInPage';
 import { AcceptInvitePage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './auth/TokenPages';
 import { AppShell } from './shell/AppShell';
@@ -75,9 +76,11 @@ function Router(): JSX.Element {
 export function App(): JSX.Element {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Router />
-      </BrowserRouter>
+      <StepUpProvider>
+        <BrowserRouter>
+          <Router />
+        </BrowserRouter>
+      </StepUpProvider>
     </AuthProvider>
   );
 }

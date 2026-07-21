@@ -39,15 +39,37 @@ export interface ClientOptions {
   readonly fetchImpl?: typeof fetch;
 }
 
-/** An API error carrying the HTTP status. */
+/** An API error carrying the HTTP status and, when present, the server's reason
+ * and whether the action is merely gated on step-up (re-authentication). */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    readonly reason?: string,
+    readonly requiresStepUp: boolean = false,
   ) {
     super(message);
     this.name = 'ApiError';
   }
+}
+
+/** Build an ApiError from a non-ok Response, parsing the JSON body
+ * `{ error, stepUp }` when the server provides one (403s from the auth engine). */
+export async function errorFrom(res: Response, path: string): Promise<ApiError> {
+  let reason: string | undefined;
+  let stepUp = false;
+  try {
+    const body = (await res.json()) as { error?: unknown; stepUp?: unknown };
+    if (typeof body.error === 'string') {
+      reason = body.error;
+    }
+    if (typeof body.stepUp === 'boolean') {
+      stepUp = body.stepUp;
+    }
+  } catch {
+    /* empty or non-JSON body — fall back to a generic message */
+  }
+  return new ApiError(res.status, reason ?? `request to ${path} failed: ${res.status}`, reason, stepUp);
 }
 
 function authHeaders(opts: ClientOptions): HeadersInit {
@@ -60,7 +82,7 @@ async function getJson<T>(opts: ClientOptions, path: string, auth: boolean): Pro
     headers: auth ? authHeaders(opts) : {},
   });
   if (!res.ok) {
-    throw new ApiError(res.status, `request to ${path} failed: ${res.status}`);
+    throw await errorFrom(res, path);
   }
   return (await res.json()) as T;
 }

@@ -13,6 +13,7 @@ import {
 import { Button, Field, StatusBadge, color, fontSize, space } from '@lab-connect/ui';
 import { API_BASE } from '../config';
 import { useAuth } from '../auth/AuthProvider';
+import { StepUpCancelledError, useStepUp } from '../auth/StepUpProvider';
 import { PageHeader } from './Pages';
 
 function opts(token: string): ControlPlaneOptions {
@@ -21,6 +22,7 @@ function opts(token: string): ControlPlaneOptions {
 
 export function SettingsPage(): JSX.Element {
   const { token, activeTenantId, activeRole, refresh } = useAuth();
+  const { guard } = useStepUp();
   const isOwner = activeRole === 'owner';
 
   const [tenant, setTenant] = useState<Tenant | null>(null);
@@ -77,12 +79,17 @@ export function SettingsPage(): JSX.Element {
     if (token === null || activeTenantId === null || tenant === null) return;
     setBusyLifecycle(true);
     try {
+      // Deactivation is high-risk: prompts step-up re-auth if the session is stale.
       const updated = tenant.active
-        ? (await deactivateTenant(opts(token), activeTenantId), false)
+        ? (await guard(() => deactivateTenant(opts(token), activeTenantId)), false)
         : (await reactivateTenant(opts(token), activeTenantId), true);
       setTenant({ ...tenant, active: updated });
       setConfirmText('');
       await refresh();
+    } catch (e) {
+      if (!(e instanceof StepUpCancelledError)) {
+        throw e;
+      }
     } finally {
       setBusyLifecycle(false);
     }

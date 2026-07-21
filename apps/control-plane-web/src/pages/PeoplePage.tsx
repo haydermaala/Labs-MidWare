@@ -14,6 +14,7 @@ import { Button, Field, StatusBadge, color, fontSize, space } from '@lab-connect
 import type { StatusKind } from '@lab-connect/ui';
 import { API_BASE } from '../config';
 import { useAuth } from '../auth/AuthProvider';
+import { StepUpCancelledError, useStepUp } from '../auth/StepUpProvider';
 import { PageHeader } from './Pages';
 
 const ROLES = [
@@ -41,6 +42,7 @@ const td: React.CSSProperties = {
 
 export function PeoplePage(): JSX.Element {
   const { token, activeTenantId, activeRole, user } = useAuth();
+  const { guard } = useStepUp();
   const isOwner = activeRole === 'owner';
   const canManage = isOwner || activeRole === 'tenant-admin';
 
@@ -70,14 +72,18 @@ export function PeoplePage(): JSX.Element {
 
   useEffect(() => { void load(); }, [load]);
 
-  /** Runs a mutation, surfacing the server's refusal reason when it declines. */
+  /** Runs a mutation (prompting step-up re-auth if the server requires it),
+   * surfacing the server's refusal reason when it declines. */
   async function run(key: string, action: () => Promise<void>): Promise<void> {
     setBusy(key);
     setNotice(null);
     try {
-      await action();
+      await guard(action);
       await load();
     } catch (e) {
+      if (e instanceof StepUpCancelledError) {
+        return; // the operator dismissed the re-auth prompt; leave state as-is
+      }
       const status = (e as { status?: number }).status;
       setNotice(
         status === 409

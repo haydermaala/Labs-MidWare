@@ -1,7 +1,7 @@
 // Typed client for the control-plane REST API (admin bearer token).
 // Fleet management: tenants, gateway inventory with liveness, and lifecycle
 // actions. No PHI or result values cross this surface.
-import { ApiError } from './index';
+import { errorFrom } from './index';
 
 /** Derived liveness label for a gateway (mirrors the server's GatewayLiveness). */
 export type GatewayStatusLabel = 'never' | 'online' | 'offline' | 'decommissioned';
@@ -78,7 +78,7 @@ async function request(
   }
   const res = await f(new URL(path, opts.baseUrl), init);
   if (!res.ok) {
-    throw new ApiError(res.status, `${method} ${path} failed: ${res.status}`);
+    throw await errorFrom(res, path);
   }
   return res;
 }
