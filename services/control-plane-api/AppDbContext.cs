@@ -110,6 +110,7 @@ public sealed class AppDbContext : DbContext
         {
             e.ToTable("device_credentials");
             e.HasKey(x => x.GatewayId);
+            e.HasIndex(x => x.TenantId);
         });
 
         modelBuilder.Entity<BootstrapTokenEntity>(e =>
@@ -274,11 +275,15 @@ public sealed class GatewayEntity
     public DateTimeOffset? LastCaptureAt { get; set; }
 }
 
-/// <summary>A gateway's rotated device credential.</summary>
+/// <summary>A gateway's rotated device credential. Carries the owning tenant
+/// (denormalized from the gateway) so Row-Level Security can scope it with a
+/// single-table predicate and the device-auth policy can resolve the tenant from
+/// the credential alone (ADR 0018 §3, §6).</summary>
 public sealed class DeviceCredentialEntity
 {
     public string GatewayId { get; set; } = "";
     public string Credential { get; set; } = "";
+    public string TenantId { get; set; } = "";
 }
 
 /// <summary>A short-lived, single-use bootstrap token.</summary>

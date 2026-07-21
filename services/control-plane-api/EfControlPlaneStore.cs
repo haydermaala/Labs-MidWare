@@ -158,22 +158,21 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return new BootstrapTokenView(token.Token, token.ExpiresAt);
     }
 
-    // ── Device-plane (NOT tenant-scoped yet) ─────────────────────────────────
-    // Enroll, ValidateDeviceCredential, RecordHeartbeat, RecordTelemetry,
-    // TenantOfGateway and CurrentConfig are reached by a gateway that presents a
-    // bootstrap token or a gateway-id + device credential — the tenant is not
-    // known until *after* that secret is validated, but reading the token/
-    // credential/gateway to validate it is exactly what tenant RLS would block
-    // (chicken-and-egg). These need a bounded device-auth path before FORCE RLS:
-    // a narrow policy permitting a by-primary-key + secret lookup on
-    // bootstrap_tokens / device_credentials / gateways with no tenant context,
-    // after which the operation sets app.tenant_id to the resolved tenant for any
-    // writes. Designed and applied in the staged rollout (ADR 0018 §Rollout);
-    // shadow-mode logging surfaces any device path that still lacks context.
+    // ── Device-plane (ADR 0018 §6) ───────────────────────────────────────────
+    // A gateway presents a secret before its tenant is known: a bootstrap token
+    // (Enroll) or a gateway-id + device credential (ValidateDeviceCredential).
+    // Reading that secret to validate it is what tenant RLS would block, so these
+    // two open a DeviceScope that binds a device-auth GUC — the RLS policy reveals
+    // only the row whose secret was presented. Once the tenant is resolved, the
+    // steady-state ops (RecordHeartbeat/RecordTelemetry/CurrentConfig) run
+    // tenant-scoped like everything else, taking the resolved tenant id.
 
     public EnrollmentResult? Enroll(string bootstrapToken, string gatewayName)
     {
         using var db = _factory.CreateDbContext();
+        // Prove possession of the token: the bootstrap_tokens device-auth policy
+        // reveals only the row whose "Token" equals app.device_token.
+        using var scope = DeviceScope.ForEnrollment(db, bootstrapToken);
         // Track the token so consuming it is an optimistic-concurrency update: the
         // ConcurrencyToken column is in the UPDATE's WHERE clause, so if two callers
         // redeem the same token concurrently, the loser's SaveChanges affects zero
@@ -183,6 +182,9 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             return null;
         }
+        // Bind the resolved tenant so the tenant-active check and the inserts below
+        // pass the tenant policies (and the token's own tenant row becomes visible).
+        scope.BindTenant(token.TenantId);
         // A token issued before its tenant was deactivated must not still enroll.
         if (!db.Tenants.AsNoTracking().Any(t => t.Id == token.TenantId && t.Active))
         {
@@ -201,7 +203,12 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         };
         var credential = Ids.NewSecret();
         db.Gateways.Add(gateway);
-        db.DeviceCredentials.Add(new DeviceCredentialEntity { GatewayId = gateway.Id, Credential = credential });
+        db.DeviceCredentials.Add(new DeviceCredentialEntity
+        {
+            GatewayId = gateway.Id,
+            Credential = credential,
+            TenantId = token.TenantId,
+        });
         Audit(db, "gateway.enrolled", gateway.TenantId, gateway.Id);
         try
         {
@@ -209,8 +216,9 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         }
         catch (DbUpdateConcurrencyException)
         {
-            return null; // another caller consumed this token first
+            return null; // another caller consumed this token first (scope rolls back)
         }
+        scope.Complete();
         return new EnrollmentResult(gateway.Id, gateway.TenantId, credential);
     }
 
@@ -232,33 +240,43 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return result;
     }
 
-    public bool ValidateDeviceCredential(string gatewayId, string credential)
+    public string? ValidateDeviceCredential(string gatewayId, string credential)
     {
         using var db = _factory.CreateDbContext();
-        var stored = db.DeviceCredentials.AsNoTracking()
+        // The device_credentials device-auth policy reveals the row only when both
+        // the gateway id and the credential match — so a stored secret is never
+        // disclosed to a caller who knows only a gateway id. The row carries the
+        // tenant, resolving the device-plane "session". The constant-time compare
+        // stays as a second layer.
+        using var scope = DeviceScope.ForCredential(db, gatewayId, credential);
+        var row = db.DeviceCredentials.AsNoTracking()
             .Where(c => c.GatewayId == gatewayId)
-            .Select(c => c.Credential)
+            .Select(c => new { c.Credential, c.TenantId })
             .FirstOrDefault();
-        return stored is not null && Ids.CredentialsEqual(stored, credential);
+        scope.Complete();
+        return row is not null && Ids.CredentialsEqual(row.Credential, credential) ? row.TenantId : null;
     }
 
-    public bool RecordHeartbeat(string gatewayId)
+    public bool RecordHeartbeat(string tenantId, string gatewayId)
     {
         using var db = _factory.CreateDbContext();
-        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId);
+        using var scope = TenantScope.Begin(db, tenantId);
+        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId && g.TenantId == tenantId);
         if (gateway is null)
         {
             return false;
         }
         gateway.LastSeenAt = _clock.GetUtcNow();
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
-    public bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry)
+    public bool RecordTelemetry(string tenantId, string gatewayId, GatewayTelemetry telemetry)
     {
         using var db = _factory.CreateDbContext();
-        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId);
+        using var scope = TenantScope.Begin(db, tenantId);
+        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId && g.TenantId == tenantId);
         if (gateway is null)
         {
             return false;
@@ -270,6 +288,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         gateway.LastCaptureAt = telemetry.LastCaptureAt;
         gateway.LastSeenAt = _clock.GetUtcNow();
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -321,16 +340,18 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return new ConfigView(gatewayId, existing.Version, existing.Environment, existing.SettingsJson, existing.PublishedAt);
     }
 
-    public ConfigView? CurrentConfig(string gatewayId)
+    public ConfigView? CurrentConfig(string tenantId, string gatewayId)
     {
         using var db = _factory.CreateDbContext();
-        var c = db.Configs.AsNoTracking().FirstOrDefault(x => x.GatewayId == gatewayId);
+        using var scope = TenantScope.Begin(db, tenantId);
+        var c = db.Configs.AsNoTracking().FirstOrDefault(x => x.GatewayId == gatewayId && x.TenantId == tenantId);
         if (c is null)
         {
             return null;
         }
-        Audit(db, "config.fetched", c.TenantId, gatewayId);
+        Audit(db, "config.fetched", tenantId, gatewayId);
         db.SaveChanges();
+        scope.Complete();
         return new ConfigView(gatewayId, c.Version, c.Environment, c.SettingsJson, c.PublishedAt);
     }
 

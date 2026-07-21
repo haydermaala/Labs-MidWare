@@ -27,11 +27,10 @@ public sealed class RlsCoverageTests
     };
 
     // Tenant-owned tables that carry no TenantId column and are covered by a
-    // documented join/self policy instead (ADR 0018 §3).
+    // documented self policy instead (ADR 0018 §3).
     private static readonly HashSet<string> JoinScopedTables = new()
     {
-        "device_credentials", // keyed by GatewayId -> gateways.TenantId
-        "tenants",            // the tenant row itself (Id = app.tenant_id)
+        "tenants", // the tenant row itself (Id = app.tenant_id)
     };
 
     // Build the model with the real relational provider so ToTable(...) names

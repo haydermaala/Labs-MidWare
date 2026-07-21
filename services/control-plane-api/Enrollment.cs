@@ -208,15 +208,19 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             .ToList();
     }
 
-    /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>
-    public bool ValidateDeviceCredential(string gatewayId, string credential) =>
+    /// <summary>Validate a gateway's device credential; return its tenant if valid,
+    /// else null (used by gateway calls to resolve the device-plane tenant).</summary>
+    public string? ValidateDeviceCredential(string gatewayId, string credential) =>
         _deviceCredentials.TryGetValue(gatewayId, out var stored) &&
-        Ids.CredentialsEqual(stored, credential);
+        Ids.CredentialsEqual(stored, credential) &&
+        _gateways.TryGetValue(gatewayId, out var gateway)
+            ? gateway.TenantId
+            : null;
 
-    /// <summary>Record a gateway heartbeat (updates last-seen).</summary>
-    public bool RecordHeartbeat(string gatewayId)
+    /// <summary>Record a gateway heartbeat (updates last-seen). Tenant-scoped.</summary>
+    public bool RecordHeartbeat(string tenantId, string gatewayId)
     {
-        if (!_gateways.TryGetValue(gatewayId, out var gateway))
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
         {
             return false;
         }
@@ -225,10 +229,10 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
     }
 
     /// <summary>Record a gateway's PHI-free telemetry snapshot (also counts as a
-    /// heartbeat — a telemetry report proves the gateway is alive).</summary>
-    public bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry)
+    /// heartbeat — a telemetry report proves the gateway is alive). Tenant-scoped.</summary>
+    public bool RecordTelemetry(string tenantId, string gatewayId, GatewayTelemetry telemetry)
     {
-        if (!_gateways.TryGetValue(gatewayId, out var gateway))
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
         {
             return false;
         }
@@ -264,10 +268,11 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         return new ConfigView(gatewayId, next.Version, next.Environment, next.SettingsJson, next.PublishedAt);
     }
 
-    /// <summary>The current config for a gateway, or null if none published.</summary>
-    public ConfigView? CurrentConfig(string gatewayId)
+    /// <summary>The current config for a gateway within a tenant, or null if none
+    /// published (or it belongs to another tenant). Tenant-scoped.</summary>
+    public ConfigView? CurrentConfig(string tenantId, string gatewayId)
     {
-        if (!_configs.TryGetValue(gatewayId, out var c))
+        if (!_configs.TryGetValue(gatewayId, out var c) || c.TenantId != tenantId)
         {
             return null;
         }

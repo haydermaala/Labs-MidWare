@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ControlPlane.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    [Migration("20260721045843_AddRowLevelSecurity")]
+    [Migration("20260721171544_AddRowLevelSecurity")]
     partial class AddRowLevelSecurity
     {
         /// <inheritdoc />
@@ -145,7 +145,13 @@ namespace ControlPlane.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("TenantId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("GatewayId");
+
+                    b.HasIndex("TenantId");
 
                     b.ToTable("device_credentials", (string)null);
                 });

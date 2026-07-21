@@ -98,9 +98,9 @@ public sealed class EfControlPlaneStoreTests
         var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
         var enrolled = store.Enroll(token!.Token, "edge-1")!;
 
-        Assert.True(store.ValidateDeviceCredential(enrolled.GatewayId, enrolled.DeviceCredential));
-        Assert.False(store.ValidateDeviceCredential(enrolled.GatewayId, "wrong"));
-        Assert.False(store.ValidateDeviceCredential("gw_missing", enrolled.DeviceCredential));
+        Assert.Equal(enrolled.TenantId, store.ValidateDeviceCredential(enrolled.GatewayId, enrolled.DeviceCredential));
+        Assert.Null(store.ValidateDeviceCredential(enrolled.GatewayId, "wrong"));
+        Assert.Null(store.ValidateDeviceCredential("gw_missing", enrolled.DeviceCredential));
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public sealed class EfControlPlaneStoreTests
         // A different tenant cannot publish to this gateway.
         Assert.Null(store.PublishConfig(tenantB.Id, gw.GatewayId, "{\"poll\":9}"));
 
-        var current = store.CurrentConfig(gw.GatewayId);
+        var current = store.CurrentConfig(tenantA.Id, gw.GatewayId);
         Assert.Equal(2, current!.Version);
         Assert.Equal("{\"poll\":2}", current.SettingsJson);
     }
@@ -132,7 +132,7 @@ public sealed class EfControlPlaneStoreTests
     public void CurrentConfig_Is_Null_When_None_Published()
     {
         var store = NewStore();
-        Assert.Null(store.CurrentConfig("gw_missing"));
+        Assert.Null(store.CurrentConfig("ten_missing", "gw_missing"));
     }
 
     [Fact]
@@ -209,12 +209,12 @@ public sealed class EfControlPlaneStoreTests
         var tenant = store.CreateTenant("Lab A");
         var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
         var gw = store.Enroll(token!.Token, "edge-1")!;
-        Assert.True(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+        Assert.NotNull(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
 
         Assert.True(store.DecommissionGateway(tenant.Id, gw.GatewayId));
 
         // Credential revoked, gateway shows inactive but is still listed (audit/history).
-        Assert.False(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+        Assert.Null(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
         var view = store.GatewaysFor(tenant.Id).Single(g => g.Id == gw.GatewayId);
         Assert.False(view.Active);
     }
@@ -232,7 +232,7 @@ public sealed class EfControlPlaneStoreTests
         Assert.False(store.DecommissionGateway(tenantB.Id, gw.GatewayId));
         Assert.False(store.DecommissionGateway(tenantA.Id, "gw_missing"));
         // The credential is untouched by the failed cross-tenant attempt.
-        Assert.True(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+        Assert.NotNull(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
     }
 
     private static (EfControlPlaneStore store, FakeTimeProvider clock, string tenantId, string gatewayId) EnrolledWithClock()
@@ -257,7 +257,7 @@ public sealed class EfControlPlaneStoreTests
         Assert.Equal("never", Gateway(store, tenantId, gatewayId).Status);
         Assert.Null(Gateway(store, tenantId, gatewayId).LastSeenAt);
 
-        Assert.True(store.RecordHeartbeat(gatewayId));
+        Assert.True(store.RecordHeartbeat(tenantId, gatewayId));
         var view = Gateway(store, tenantId, gatewayId);
         Assert.Equal("online", view.Status);
         Assert.NotNull(view.LastSeenAt);
@@ -267,7 +267,7 @@ public sealed class EfControlPlaneStoreTests
     public void Gateway_Goes_Offline_After_Timeout_Elapses()
     {
         var (store, clock, tenantId, gatewayId) = EnrolledWithClock();
-        store.RecordHeartbeat(gatewayId);
+        store.RecordHeartbeat(tenantId, gatewayId);
         Assert.Equal("online", Gateway(store, tenantId, gatewayId).Status);
 
         clock.Advance(GatewayLiveness.Timeout + TimeSpan.FromSeconds(1));
@@ -278,7 +278,7 @@ public sealed class EfControlPlaneStoreTests
     public void Decommissioned_Gateway_Reports_Decommissioned_Status()
     {
         var (store, _, tenantId, gatewayId) = EnrolledWithClock();
-        store.RecordHeartbeat(gatewayId);
+        store.RecordHeartbeat(tenantId, gatewayId);
         Assert.Equal("online", Gateway(store, tenantId, gatewayId).Status);
 
         store.DecommissionGateway(tenantId, gatewayId);
@@ -289,6 +289,6 @@ public sealed class EfControlPlaneStoreTests
     public void RecordHeartbeat_Unknown_Gateway_Is_False()
     {
         var store = NewStore();
-        Assert.False(store.RecordHeartbeat("gw_missing"));
+        Assert.False(store.RecordHeartbeat("ten_missing", "gw_missing"));
     }
 }

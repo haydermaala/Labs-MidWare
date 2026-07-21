@@ -51,20 +51,30 @@ public interface IControlPlaneStore
     /// <summary>Gateways for a tenant (never returns another tenant's gateways).</summary>
     IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId);
 
-    /// <summary>Validate a gateway's device credential.</summary>
-    bool ValidateDeviceCredential(string gatewayId, string credential);
+    /// <summary>
+    /// Validate a gateway's device credential and, if valid, return the id of the
+    /// tenant that owns it (null if the credential is wrong or unknown). The
+    /// resolved tenant is the device-plane equivalent of an authenticated session:
+    /// callers pass it back to the steady-state operations below, which run
+    /// tenant-scoped. (ADR 0018 §6.)
+    /// </summary>
+    string? ValidateDeviceCredential(string gatewayId, string credential);
 
     /// <summary>
     /// Record that a gateway was just seen (heartbeat / authenticated contact),
-    /// updating its last-seen time. Returns false if the gateway does not exist.
+    /// updating its last-seen time. <paramref name="tenantId"/> is the tenant
+    /// resolved by <see cref="ValidateDeviceCredential"/>. Returns false if the
+    /// gateway does not exist in that tenant.
     /// </summary>
-    bool RecordHeartbeat(string gatewayId);
+    bool RecordHeartbeat(string tenantId, string gatewayId);
 
     /// <summary>
     /// Record a gateway's PHI-free telemetry snapshot (message counts + last
-    /// capture time), also updating last-seen. Returns false if it does not exist.
+    /// capture time), also updating last-seen. <paramref name="tenantId"/> is the
+    /// tenant resolved by <see cref="ValidateDeviceCredential"/>. Returns false if
+    /// the gateway does not exist in that tenant.
     /// </summary>
-    bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry);
+    bool RecordTelemetry(string tenantId, string gatewayId, GatewayTelemetry telemetry);
 
     /// <summary>The tenant that owns a gateway, if any.</summary>
     string? TenantOfGateway(string gatewayId);
@@ -72,8 +82,10 @@ public interface IControlPlaneStore
     /// <summary>Publish a new (non-production) config version for a tenant's gateway.</summary>
     ConfigView? PublishConfig(string tenantId, string gatewayId, string settingsJson);
 
-    /// <summary>The current config for a gateway, or null.</summary>
-    ConfigView? CurrentConfig(string gatewayId);
+    /// <summary>The current config for a gateway within a tenant, or null.
+    /// <paramref name="tenantId"/> is the tenant resolved by
+    /// <see cref="ValidateDeviceCredential"/>.</summary>
+    ConfigView? CurrentConfig(string tenantId, string gatewayId);
 
     /// <summary>Append-only audit events for a tenant, oldest first.</summary>
     IReadOnlyCollection<AuditEvent> AuditFor(string tenantId);

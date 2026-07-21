@@ -709,11 +709,12 @@ app.MapPost("/api/gateways/heartbeat", (IControlPlaneStore store, HttpRequest re
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();
-    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    var tenantId = string.IsNullOrEmpty(gatewayId) ? null : store.ValidateDeviceCredential(gatewayId, credential);
+    if (tenantId is null)
     {
         return Results.Unauthorized();
     }
-    store.RecordHeartbeat(gatewayId);
+    store.RecordHeartbeat(tenantId, gatewayId);
     return Results.NoContent();
 });
 
@@ -724,7 +725,8 @@ app.MapPost("/api/gateways/telemetry", (GatewayTelemetryRequest body, IControlPl
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();
-    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    var tenantId = string.IsNullOrEmpty(gatewayId) ? null : store.ValidateDeviceCredential(gatewayId, credential);
+    if (tenantId is null)
     {
         return Results.Unauthorized();
     }
@@ -732,7 +734,7 @@ app.MapPost("/api/gateways/telemetry", (GatewayTelemetryRequest body, IControlPl
     var telemetry = new GatewayTelemetry(
         Math.Max(0, body.Captured), Math.Max(0, body.Pending),
         Math.Max(0, body.Delivered), Math.Max(0, body.Dead), body.LastCaptureAt);
-    return store.RecordTelemetry(gatewayId, telemetry) ? Results.NoContent() : Results.NotFound();
+    return store.RecordTelemetry(tenantId, gatewayId, telemetry) ? Results.NoContent() : Results.NotFound();
 });
 
 // A gateway fetches its own config, authenticated by its device credential.
@@ -740,13 +742,14 @@ app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();
-    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    var tenantId = string.IsNullOrEmpty(gatewayId) ? null : store.ValidateDeviceCredential(gatewayId, credential);
+    if (tenantId is null)
     {
         return Results.Unauthorized();
     }
     // An authenticated config fetch is also a liveness signal.
-    store.RecordHeartbeat(gatewayId);
-    var config = store.CurrentConfig(gatewayId);
+    store.RecordHeartbeat(tenantId, gatewayId);
+    var config = store.CurrentConfig(tenantId, gatewayId);
     return config is null ? Results.NoContent() : Results.Json(config);
 });
 

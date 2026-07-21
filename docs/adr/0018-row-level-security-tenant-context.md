@@ -54,13 +54,14 @@ before FORCE RLS goes live — see §Rollout):
    tenant GUC — they need the P6 platform role (BYPASSRLS or a cross-tenant
    policy behind `/platform-admin`).
 2. **Device-plane auth bootstrapping** (`Enroll`, `ValidateDeviceCredential`,
-   `RecordHeartbeat`, `RecordTelemetry`, `TenantOfGateway`, `CurrentConfig`):
-   the tenant is unknown until a bootstrap token / device credential is
-   validated, but reading that secret is what RLS would block. **Design resolved
-   in §6** (two single-table device-auth policies + denormalized
-   `device_credentials.TenantId`, proven). Store implementation still pending:
-   the schema column + policy wiring + threading the resolved tenant into
-   `ValidateDeviceCredential`/steady-state ops.
+   `RecordHeartbeat`, `RecordTelemetry`, `CurrentConfig`): the tenant is unknown
+   until a bootstrap token / device credential is validated, but reading that
+   secret is what RLS would block. **Resolved and implemented (§6):** a
+   `DeviceScope` binds the device-auth GUCs so the policy reveals only the
+   presented secret's row; `Enroll` then binds the resolved tenant for its
+   writes, and `ValidateDeviceCredential` returns the tenant which the endpoints
+   thread into the now-tenant-scoped steady-state ops. `device_credentials`
+   carries a denormalized `TenantId` (single-table policies, no recursion).
 
 A later `TenantContext` (ambient, set by request middleware) can additionally
 bind `app.user_id`/`app.membership_id`/`app.support_grant_id` for user-scoped
@@ -184,6 +185,14 @@ tenant); credential validation (`app.device_gateway` + `app.device_credential`
 reveal the credential row *with its TenantId*; wrong credential or a different
 gateway's id ⇒ 0 rows); steady-state (tenant-scoped update sees only the
 authenticated gateway). All device paths fail closed when the GUCs are unset.
+
+After the store was wired, the **full real migration chain** (through the
+`AddDeviceCredentialTenantId` column + backfill and the rebuilt
+`AddRowLevelSecurity`) was applied to `postgres:16` and the exact SQL sequences
+`EfControlPlaneStore` now issues — the enroll transaction, the credential lookup,
+and the tenant-scoped heartbeat — were replayed as `app_runtime` and all
+succeeded. 118 backend tests pass (device-auth is a no-op under the in-memory
+provider, so behaviour there is unchanged).
 
 ## Consequences
 
