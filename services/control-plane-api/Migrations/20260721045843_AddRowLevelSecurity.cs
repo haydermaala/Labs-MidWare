@@ -23,7 +23,9 @@ namespace ControlPlane.Api.Migrations
         // EF maps entity properties to PascalCase columns (no snake_case convention),
         // so identifiers are double-quoted (unquoted Postgres identifiers fold to
         // lower-case and would miss the real "TenantId"/"Id"/"GatewayId" columns).
-        private static readonly (string Table, string Predicate)[] Policies =
+        // internal (not private) so the migration-gate test (ADR 0018 §4) can
+        // assert every tenant-owned table in the model is covered here.
+        internal static readonly (string Table, string Predicate)[] Policies =
         {
             ("gateways", "\"TenantId\" = current_setting('app.tenant_id', true)"),
             ("bootstrap_tokens", "\"TenantId\" = current_setting('app.tenant_id', true)"),

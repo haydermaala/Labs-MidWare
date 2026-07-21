@@ -86,10 +86,18 @@ policy if warranted). `current_setting(…, true)` returns NULL when unset ⇒ t
 row is invisible (fail-closed).
 
 ### 4. Migration-gate test
-A test enumerates tenant-owned tables and fails if any lacks: a `tenant_id`
-column (or a documented join-based policy like `device_credentials`), RLS
-enabled + forced, an applicable policy, and a leading `tenant_id` index. New
-tenant tables cannot ship without isolation.
+*Implemented* (`RlsCoverageTests`): the gate builds the model with the relational
+provider and forces every mapped table into exactly one bucket — carries a
+`TenantId` column, or is a documented join/self table (`device_credentials`,
+`tenants`), or is an explicitly-listed global/user table (`users`,
+`user_sessions`, `user_tokens`, `recovery_codes`). The first two must appear in
+the `AddRowLevelSecurity` policy set; the last must not (and must not carry a
+`TenantId`). Any table in none of the buckets is "unclassified" and fails the
+build — a new tenant table cannot ship without a deliberate isolation decision.
+Companion assertions check no policy targets an unknown or global table, and lock
+the P1 coverage set at the ten known tenant tables. The gate had its teeth proven
+(removing any table's policy fails it). EF already emits the leading `TenantId`
+indexes (`AppDbContext.OnModelCreating`).
 
 ### 5. Rollout (never a one-step prod change)
 `restore-drill.sh` demonstrated on a prod backup → create `app_runtime` +
