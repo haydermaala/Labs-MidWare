@@ -56,9 +56,11 @@ before FORCE RLS goes live — see §Rollout):
 2. **Device-plane auth bootstrapping** (`Enroll`, `ValidateDeviceCredential`,
    `RecordHeartbeat`, `RecordTelemetry`, `TenantOfGateway`, `CurrentConfig`):
    the tenant is unknown until a bootstrap token / device credential is
-   validated, but reading that secret is what RLS would block — needs a narrow
-   by-PK+secret device-auth policy, after which the operation sets
-   `app.tenant_id` to the resolved tenant for its writes.
+   validated, but reading that secret is what RLS would block. **Design resolved
+   in §6** (two single-table device-auth policies + denormalized
+   `device_credentials.TenantId`, proven). Store implementation still pending:
+   the schema column + policy wiring + threading the resolved tenant into
+   `ValidateDeviceCredential`/steady-state ops.
 
 A later `TenantContext` (ambient, set by request middleware) can additionally
 bind `app.user_id`/`app.membership_id`/`app.support_grant_id` for user-scoped
@@ -75,9 +77,16 @@ during full-schema apply-verification, see §Verification):
 
 | Table | Policy key |
 |---|---|
-| `gateways`, `bootstrap_tokens`, `configs`, `audit`, `memberships`, `invitations`, `subscriptions`, `billing_events` | `"TenantId" = current_setting('app.tenant_id', true)` |
-| `device_credentials` (no `TenantId`; keyed by `"GatewayId"`) | `"GatewayId" IN (SELECT "Id" FROM gateways WHERE "TenantId" = current_setting('app.tenant_id', true))` |
+| `gateways`, `bootstrap_tokens`, `configs`, `audit`, `memberships`, `invitations`, `subscriptions`, `billing_events`, `device_credentials` | `"TenantId" = current_setting('app.tenant_id', true)` |
 | `tenants` (the tenant row itself) | `"Id" = current_setting('app.tenant_id', true)` |
+
+> **`device_credentials` carries a denormalized `TenantId`** (set at enrollment)
+> rather than a `gateway_id`→`gateways` join. This is required by the device-auth
+> design (§6): a join-based policy makes `device_credentials` reference `gateways`,
+> and once `gateways` also gets a device-auth policy referencing `device_credentials`,
+> Postgres raises *"infinite recursion detected in policy"* (reproduced). A
+> single-table predicate on every table avoids the cycle, and the credential row
+> then carries the tenant so device auth can resolve it without reading `gateways`.
 
 Global/user-scoped tables (`users`, `user_sessions`, `user_tokens`,
 `recovery_codes`) are **not** tenant-scoped and are excluded from tenant RLS;
@@ -108,6 +117,42 @@ enable RLS in **staging** behind a flag → **shadow-log** any policy denials
 migration is not merged to `main` until this sequence completes** — Railway runs
 `Database.Migrate()` on deploy, so a merge *is* the production cutover.
 
+### 6. Device-plane authentication under RLS
+Gateways authenticate with a secret (a bootstrap token at enrollment, then a
+device credential), presented *before* any tenant is known — but reading the
+secret to validate it is what tenant RLS blocks. Two **single-table** device-auth
+policies (permissive, OR-combined with the tenant policies) resolve this by
+revealing only the row whose secret the caller proves possession of, keyed on
+transaction-local GUCs:
+
+| Table | Device-auth policy | GUCs set by |
+|---|---|---|
+| `bootstrap_tokens` | `"Token" = current_setting('app.device_token', true)` | `Enroll` |
+| `device_credentials` | `"GatewayId" = current_setting('app.device_gateway', true) AND "Credential" = current_setting('app.device_credential', true)` | `ValidateDeviceCredential` |
+
+The credential policy requires the **credential** (not just the guessable gateway
+id) to reveal the row, so it never discloses a stored secret to a caller who
+knows only a gateway id; the app-side constant-time compare stays as a second
+layer. Because `device_credentials` now carries `TenantId`, the revealed row
+yields the tenant directly — so the flow is:
+
+1. **Enroll**: `set app.device_token` → read+consume the token → `set app.tenant_id`
+   to the token's tenant → insert gateway + credential (both under the tenant
+   `WITH CHECK`). No `gateways`/`configs` device-auth policy needed.
+2. **Steady-state** (`RecordHeartbeat`/`RecordTelemetry`/`CurrentConfig`):
+   `ValidateDeviceCredential` resolves the tenant from the credential row, then
+   the operation runs **tenant-scoped** under the ordinary tenant policies.
+
+Cross-table device-auth policies (e.g. a `gateways` policy doing
+`EXISTS(SELECT FROM device_credentials …)`) were **rejected**: with the
+join-based `device_credentials` policy they form a cycle and Postgres raises
+*"infinite recursion detected in policy for relation gateways"* (reproduced
+against `postgres:16`). The denormalized-`TenantId` design keeps every predicate
+single-table.
+
+Unset device GUCs ⇒ `current_setting(…, true)` is NULL ⇒ `= NULL` is false ⇒ no
+rows: the device paths are fail-closed too.
+
 ## Verification
 
 Full-schema apply-verification (2026-07-21): the real EF migration script
@@ -129,6 +174,16 @@ is cleared ⇒ 0 rows (proves no context leaks across pooled connections — the
 reason for `SET LOCAL`/local `set_config` over session `SET`); a second
 transaction rebinds to t2 cleanly. This is precisely EF's per-operation
 transaction lifecycle, so the helper binds correctly against real Postgres.
+
+**Device-auth (§6) proven** as `app_runtime` against the denormalized schema:
+the recursive cross-table variant was first reproduced failing (*"infinite
+recursion detected in policy for relation gateways"*), then the single-table
+design was exercised end-to-end — enroll (`app.device_token` reveals only the
+presented token ⇒ resolves its tenant ⇒ inserts gateway + credential under that
+tenant); credential validation (`app.device_gateway` + `app.device_credential`
+reveal the credential row *with its TenantId*; wrong credential or a different
+gateway's id ⇒ 0 rows); steady-state (tenant-scoped update sees only the
+authenticated gateway). All device paths fail closed when the GUCs are unset.
 
 ## Consequences
 
