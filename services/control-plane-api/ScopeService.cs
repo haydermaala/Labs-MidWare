@@ -87,4 +87,20 @@ public sealed class ScopeService
             .ToList();
         return nodes.Count == 0 ? null : ScopeTree.Build(nodes);
     }
+
+    /// <summary>A tenant's scopes as flat views, ordered by materialized path so the
+    /// caller can render the hierarchy (root first, children under parents).</summary>
+    public IReadOnlyList<ScopeView> List(string tenantId)
+    {
+        using var db = _factory.CreateDbContext();
+        return db.Scopes.AsNoTracking()
+            .Where(s => s.TenantId == tenantId)
+            .OrderBy(s => s.Path)
+            .AsEnumerable()
+            .Select(s => new ScopeView(s.Id, s.Type, s.Name, s.ParentId, s.Path))
+            .ToList();
+    }
 }
+
+/// <summary>A scope as returned by the admin API.</summary>
+public sealed record ScopeView(string Id, string Type, string Name, string? ParentId, string Path);

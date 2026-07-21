@@ -72,6 +72,22 @@ public sealed class ScopeServiceTests
     }
 
     [Fact]
+    public void List_Returns_Scopes_Ordered_By_Path()
+    {
+        var svc = New();
+        var root = svc.EnsureRoot("ten_1", "HQ");
+        var site = svc.CreateChild("ten_1", root.Id, ScopeType.Site, "North")!;
+        svc.CreateChild("ten_1", site.Id, ScopeType.Laboratory, "Haem");
+        svc.EnsureRoot("ten_other", "Other"); // isolation
+
+        var list = svc.List("ten_1");
+        Assert.Equal(3, list.Count);
+        Assert.Equal(root.Id, list[0].Id);              // root sorts first by path
+        Assert.All(list, v => Assert.StartsWith("/" + root.Id, v.Path));
+        Assert.Empty(svc.List("ten_unknown"));
+    }
+
+    [Fact]
     public void Scopes_Are_Isolated_Per_Tenant()
     {
         var svc = New();

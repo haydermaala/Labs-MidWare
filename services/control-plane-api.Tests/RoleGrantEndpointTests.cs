@@ -1,8 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace ControlPlane.Api.Tests;
 
@@ -23,6 +21,7 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record LoginDto(string SessionToken, UserDto User);
     private sealed record AssignmentDto(string Id, string UserId, string Role, string ScopeId, bool Active);
     private sealed record CustomRoleDto(string RoleKey, string Name, List<string> PermissionKeys);
+    private sealed record ScopeDto(string Id, string Type, string Name, string? ParentId, string Path);
 
     private HttpClient Admin()
     {
@@ -56,25 +55,10 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
         Assert.Equal(HttpStatusCode.NoContent, (await Admin().PostAsJsonAsync("/api/admin/memberships",
             new { userId, tenantId, role })).StatusCode);
 
-    // No scope-creation HTTP endpoint yet (a later slice); seed one directly.
-    private string SeedScope(string tenantId)
-    {
-        using var scope = _factory.Services.CreateScope();
-        var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-        using var db = factory.CreateDbContext();
-        var entity = new ScopeEntity
-        {
-            Id = Ids.New("scp"),
-            TenantId = tenantId,
-            Type = ScopeType.Tenant.ToString(),
-            Name = "root",
-            Path = "/root",
-            CreatedAt = DateTimeOffset.UtcNow,
-        };
-        db.Scopes.Add(entity);
-        db.SaveChanges();
-        return entity.Id;
-    }
+    // Build the tenant-root scope through the real endpoint (admin bypasses the gate).
+    private async Task<string> SeedScope(string tenantId) =>
+        (await (await Admin().PostAsJsonAsync($"/api/tenants/{tenantId}/scopes", new { name = "root" }))
+            .Content.ReadFromJsonAsync<ScopeDto>())!.Id;
 
     [Fact]
     public async Task Owner_Grants_Scoped_Role_Nonmember_Gets_401()
@@ -83,7 +67,7 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
         var (ownerId, ownerSession) = await NewUser("grant-owner@example.test");
         await GrantMembership(ownerId, tenant, "owner");
         var (targetId, _) = await NewUser("grant-target@example.test");
-        var scope = SeedScope(tenant);
+        var scope = await SeedScope(tenant);
 
         var res = await Session(ownerSession).PostAsJsonAsync($"/api/tenants/{tenant}/role-assignments",
             new { userId = targetId, role = "read-only", scopeId = scope });
@@ -101,13 +85,46 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Scope_Hierarchy_Is_Built_Read_And_Gated()
+    {
+        var tenant = await NewTenant("Scope Lab");
+        var (ownerId, ownerSession) = await NewUser("scope-owner@example.test");
+        await GrantMembership(ownerId, tenant, "owner");
+        var owner = Session(ownerSession);
+
+        var root = (await (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes", new { name = "HQ" }))
+            .Content.ReadFromJsonAsync<ScopeDto>())!;
+        Assert.Null(root.ParentId);
+
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes",
+            new { parentId = root.Id, type = "Laboratory", name = "Haematology" })).StatusCode);
+
+        var list = await owner.GetFromJsonAsync<List<ScopeDto>>($"/api/tenants/{tenant}/scopes");
+        Assert.Equal(2, list!.Count);
+
+        // Invalid nesting (a tenant cannot sit under a tenant root) → 400.
+        Assert.Equal(HttpStatusCode.BadRequest, (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes",
+            new { parentId = root.Id, type = "Tenant", name = "bad" })).StatusCode);
+
+        // Read-only members may view the tree but not shape it; non-members get 401.
+        var (roId, roSession) = await NewUser("scope-ro@example.test");
+        await GrantMembership(roId, tenant, "read-only");
+        Assert.Equal(HttpStatusCode.OK, (await Session(roSession).GetAsync($"/api/tenants/{tenant}/scopes")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(roSession).PostAsJsonAsync(
+            $"/api/tenants/{tenant}/scopes", new { name = "nope" })).StatusCode);
+        var (_, strangerSession) = await NewUser("scope-stranger@example.test");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await Session(strangerSession).GetAsync($"/api/tenants/{tenant}/scopes")).StatusCode);
+    }
+
+    [Fact]
     public async Task Delegation_Limits_Surface_As_403_On_Grant_And_Custom_Role()
     {
         var tenant = await NewTenant("Deleg Lab");
         var (ownerId, ownerSession) = await NewUser("deleg-owner@example.test");
         await GrantMembership(ownerId, tenant, "owner");
         var (targetId, _) = await NewUser("deleg-target@example.test");
-        var scope = SeedScope(tenant);
+        var scope = await SeedScope(tenant);
         var owner = Session(ownerSession);
 
         // Granting the owner role fails delegation (tenant.deactivate is not delegable).

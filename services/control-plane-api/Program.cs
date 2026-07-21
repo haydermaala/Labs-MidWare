@@ -405,6 +405,43 @@ app.MapPost("/api/invitations/accept", (TokenRequest body, AuthService auth, Mem
         : Results.Json(membership);
 });
 
+// --- P3: scope hierarchy (ADR 0020) ----------------------------------------
+// The tenant org tree (tenant → site → laboratory → department) that scoped role
+// assignments are granted against. Reading is any member; shaping the structure
+// is a tenant-management action. A dedicated scope permission is a later refinement.
+app.MapGet("/api/tenants/{tenantId}/scopes",
+    (string tenantId, AuthService auth, MembershipService members, ScopeService scopes, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantSettingsView) is { } denied) return denied;
+    return Results.Json(scopes.List(tenantId));
+});
+
+app.MapPost("/api/tenants/{tenantId}/scopes",
+    (string tenantId, CreateScopeRequest body, AuthService auth, MembershipService members, ScopeService scopes, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantRename) is { } denied) return denied;
+    if (string.IsNullOrWhiteSpace(body.Name))
+    {
+        return Results.BadRequest(new { error = "a scope name is required" });
+    }
+    // No parent → the tenant root (idempotent, always type Tenant).
+    if (string.IsNullOrWhiteSpace(body.ParentId))
+    {
+        var root = scopes.EnsureRoot(tenantId, body.Name);
+        return Results.Created($"/api/tenants/{tenantId}/scopes/{root.Id}",
+            new ScopeView(root.Id, root.Type, root.Name, root.ParentId, root.Path));
+    }
+    if (!Enum.TryParse<ScopeType>(body.Type, ignoreCase: true, out var type))
+    {
+        return Results.BadRequest(new { error = "unknown scope type" });
+    }
+    var child = scopes.CreateChild(tenantId, body.ParentId, type, body.Name);
+    return child is null
+        ? Results.BadRequest(new { error = "unknown parent, or invalid nesting for the type" })
+        : Results.Created($"/api/tenants/{tenantId}/scopes/{child.Id}",
+            new ScopeView(child.Id, child.Type, child.Name, child.ParentId, child.Path));
+});
+
 // --- P3: scoped role grants + custom roles (ADR 0020) ----------------------
 // A grant is a role held at a scope (role_assignments). Creating/revoking one is
 // a member-admin action (same permission as changing a role) and is bounded by
@@ -923,6 +960,9 @@ internal sealed record InviteRequest(string Email, string Role);
 
 /// <summary>Change an existing member's role.</summary>
 internal sealed record ChangeRoleRequest(string Role);
+
+/// <summary>Create a scope: a tenant root (no parent) or a child of an existing scope.</summary>
+internal sealed record CreateScopeRequest(string? ParentId, string? Type, string? Name);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);
