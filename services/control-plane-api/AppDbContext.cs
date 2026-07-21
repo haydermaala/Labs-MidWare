@@ -29,6 +29,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<ConfigEntity> Configs => Set<ConfigEntity>();
     public DbSet<AuditEntity> Audit => Set<AuditEntity>();
     public DbSet<PermissionDefinitionEntity> PermissionDefinitions => Set<PermissionDefinitionEntity>();
+    public DbSet<ScopeEntity> Scopes => Set<ScopeEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -141,6 +142,17 @@ public sealed class AppDbContext : DbContext
             // (Permissions.All), reconciled at startup by PermissionCatalogSync.
             e.ToTable("permission_definitions");
             e.HasKey(x => x.Key);
+        });
+
+        modelBuilder.Entity<ScopeEntity>(e =>
+        {
+            // A tenant's org-hierarchy nodes (P3). Path is the materialized ancestor
+            // path (incl. self) for prefix descendant queries.
+            e.ToTable("scopes");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+            e.HasIndex(x => x.ParentId);
+            e.HasIndex(x => x.Path);
         });
     }
 }
@@ -351,4 +363,19 @@ public sealed class PermissionDefinitionEntity
     public bool Delegable { get; set; }
     public string Description { get; set; } = "";
     public bool Active { get; set; } = true;
+}
+
+/// <summary>A node in a tenant's org hierarchy (P3): tenant → site → laboratory →
+/// department. Mirrors <see cref="ScopeNode"/>. <see cref="Path"/> is the
+/// materialized ancestor path (including self) for prefix descendant queries; the
+/// root's <see cref="ParentId"/> is null.</summary>
+public sealed class ScopeEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string Type { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? ParentId { get; set; }
+    public string Path { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
 }
