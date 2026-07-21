@@ -52,8 +52,10 @@ builder.Services.AddSingleton<AuthService>();
 builder.Services.AddSingleton<MembershipService>();
 builder.Services.AddSingleton<BillingService>();
 // Central authorization engine (P2, ADR 0019) — the authoritative gate for
-// tenant-scoped endpoints.
+// tenant-scoped endpoints. The scope-aware layer (P3, ADR 0020) resolves a
+// subject's effective roles at a target scope before delegating to it.
 builder.Services.AddSingleton<IAuthorizationEngine, AuthorizationEngine>();
+builder.Services.AddSingleton<IScopedAuthorizationEngine, ScopedAuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.
