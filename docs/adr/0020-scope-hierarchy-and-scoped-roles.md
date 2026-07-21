@@ -33,12 +33,16 @@ Persisted as `scopes` (`ScopeEntity`): `Id`, `TenantId`, `Type`, `Name`,
 included) for prefix descendant queries. Gateways/devices gain a `ScopeId` in a
 later slice; until then they remain tenant-level.
 
-### 2. Scoped role assignments (next slice)
-`role_assignments`: `(subject, role, scope_id, granted_by, expires_at?)`. A
-subject may hold several assignments at different scopes; the effective grant at a
-resource is the union over assignments whose scope `Contains` the resource's
-scope. This replaces the single `memberships.role` (kept as the tenant-root
-assignment during migration). Expiry is enforced at evaluation time.
+### 2. Scoped role assignments (model + resolver done)
+`role_assignments` (`RoleAssignmentEntity`): `Id`, `TenantId`, `UserId`, `Role`,
+`ScopeId`, `GrantedByUserId`, `CreatedAt`, `ExpiresAt?`, `RevokedAt?`. A subject
+may hold several assignments at different scopes; the effective grant at a target
+scope is the union over the subject's active assignments whose scope `Contains`
+the target — `RoleAssignments.EffectiveRolesAt(...)`. A tenant-root assignment is
+therefore tenant-wide, matching today's single `memberships.role` (kept as the
+root assignment during migration). Expiry (and `RevokedAt`) are honoured at
+evaluation time. *Still to wire:* the write/grant API (with delegation limits,
+§3), the memberships→root-assignment backfill, and consumption by the engine (§4).
 
 ### 3. Custom roles + delegation (later slice)
 Tenant-defined roles are a named set of permission keys, gated by a plan

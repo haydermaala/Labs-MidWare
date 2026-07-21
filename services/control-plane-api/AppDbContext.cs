@@ -30,6 +30,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<AuditEntity> Audit => Set<AuditEntity>();
     public DbSet<PermissionDefinitionEntity> PermissionDefinitions => Set<PermissionDefinitionEntity>();
     public DbSet<ScopeEntity> Scopes => Set<ScopeEntity>();
+    public DbSet<RoleAssignmentEntity> RoleAssignments => Set<RoleAssignmentEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -153,6 +154,16 @@ public sealed class AppDbContext : DbContext
             e.HasIndex(x => x.TenantId);
             e.HasIndex(x => x.ParentId);
             e.HasIndex(x => x.Path);
+        });
+
+        modelBuilder.Entity<RoleAssignmentEntity>(e =>
+        {
+            // A subject's scoped, optionally-expiring role grant (P3).
+            e.ToTable("role_assignments");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+            e.HasIndex(x => x.UserId);
+            e.HasIndex(x => x.ScopeId);
         });
     }
 }
@@ -378,4 +389,21 @@ public sealed class ScopeEntity
     public string? ParentId { get; set; }
     public string Path { get; set; } = "";
     public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>A subject's grant of a role at a scope (P3). Mirrors
+/// <see cref="RoleAssignment"/>, plus provenance (<see cref="GrantedByUserId"/>)
+/// and soft-revocation (<see cref="RevokedAt"/>). A null <see cref="ExpiresAt"/>
+/// never expires; a set <see cref="RevokedAt"/> is inactive regardless.</summary>
+public sealed class RoleAssignmentEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string ScopeId { get; set; } = "";
+    public string GrantedByUserId { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
 }
