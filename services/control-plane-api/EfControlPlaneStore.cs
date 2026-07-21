@@ -38,37 +38,44 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active);
     }
 
-    // ── Platform / cross-tenant reads (NOT tenant-scoped) ────────────────────
-    // These enumerate or probe across tenants and so cannot run under a single
-    // tenant GUC. They are invoked only by the platform-admin surface (today the
-    // AdminToken). Before FORCE RLS is enabled on the live DB, they must run via
-    // the platform-elevated path (P6: named platform roles behind /platform-admin,
-    // whose DB role has BYPASSRLS or a dedicated cross-tenant policy). Until then
-    // the app connects as the owner role, for which the migration is not yet
-    // merged (ADR 0018 §Rollout), so no behaviour changes.
+    // ── Tenant registry reads ────────────────────────────────────────────────
+    // Tenants() enumerates across tenants, so it runs under a PlatformScope (the
+    // app.platform flag + the tenants_platform_read policy — a cross-tenant read
+    // of the registry only, ADR 0018 §7). The single-tenant lookups take a
+    // specific id and stay tenant-scoped (the tenants self-policy), which is the
+    // least-privilege choice — the platform flag is never set for them.
 
     public IReadOnlyCollection<Tenant> Tenants()
     {
         using var db = _factory.CreateDbContext();
-        return db.Tenants.AsNoTracking()
+        using var scope = PlatformScope.Begin(db);
+        var result = db.Tenants.AsNoTracking()
             .OrderBy(t => t.CreatedAt)
             .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
             .ToList();
+        scope.Complete();
+        return result;
     }
 
     public bool TenantExists(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Tenants.AsNoTracking().Any(t => t.Id == tenantId);
+        using var scope = TenantScope.Begin(db, tenantId);
+        var exists = db.Tenants.AsNoTracking().Any(t => t.Id == tenantId);
+        scope.Complete();
+        return exists;
     }
 
     public Tenant? FindTenant(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Tenants.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var tenant = db.Tenants.AsNoTracking()
             .Where(t => t.Id == tenantId)
             .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
             .FirstOrDefault();
+        scope.Complete();
+        return tenant;
     }
 
     public Tenant? RenameTenant(string tenantId, string name)

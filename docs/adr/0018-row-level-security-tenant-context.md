@@ -154,6 +154,29 @@ single-table.
 Unset device GUCs ⇒ `current_setting(…, true)` is NULL ⇒ `= NULL` is false ⇒ no
 rows: the device paths are fail-closed too.
 
+### 7. Platform / cross-tenant registry reads
+A few trusted server-side operations legitimately span tenants — the admin
+tenant list (`GET /api/tenants`) and resolving tenant names across a user's
+memberships. These read the tenant **registry** (id/name/active), not tenant
+data, and cannot run under a single tenant GUC. A permissive policy on `tenants`
+grants this, gated on a transaction-local flag:
+
+```
+CREATE POLICY tenants_platform_read ON tenants
+  USING (current_setting('app.platform', true) = 'true');
+```
+
+`PlatformScope` sets the flag; only `Tenants()` opens it. **Single-tenant**
+lookups (`TenantExists`, `FindTenant`) take a specific id and stay tenant-scoped
+under the self-policy — the platform flag is never set for them (least
+privilege). The policy is scoped to `tenants` **only**, so the flag grants no
+cross-tenant access to actual tenant data (`gateways`/`configs`/`audit`/
+`subscriptions`/…). The full super-admin cross-tenant surface — reading across
+all tenants' operational data behind `/platform-admin` — is **P6**, via named
+platform roles (with `BYPASSRLS` or their own broader policies) and step-up
+auth; this P1 policy is deliberately just the registry read the existing app
+already needs.
+
 ## Verification
 
 Full-schema apply-verification (2026-07-21): the real EF migration script
@@ -193,6 +216,12 @@ After the store was wired, the **full real migration chain** (through the
 and the tenant-scoped heartbeat — were replayed as `app_runtime` and all
 succeeded. 118 backend tests pass (device-auth is a no-op under the in-memory
 provider, so behaviour there is unchanged).
+
+**Platform policy (§7) proven** as `app_runtime`: with `app.platform='true'` a
+read of `tenants` returns all rows (cross-tenant registry) while `gateways`
+returns **0** (the flag grants no access to tenant data); with no flag and no
+tenant context, `tenants` returns 0 (fail-closed); with `app.tenant_id='t1'`
+only t1's registry row is visible (self-policy).
 
 ## Consequences
 

@@ -63,6 +63,16 @@ namespace ControlPlane.Api.Migrations
                 null),
         };
 
+        // Platform policy (ADR 0018 §7): a permissive cross-tenant READ of the
+        // tenant *registry* only, gated on the transaction-local `app.platform`
+        // flag. Trusted server-side operations that legitimately span tenants
+        // (the admin tenant list; resolving tenant names across a user's
+        // memberships) set the flag; single-tenant lookups do NOT — they stay
+        // tenant-scoped. Scoped to `tenants` on purpose: it grants no cross-tenant
+        // access to actual tenant DATA (gateways/configs/audit/…). The full
+        // super-admin cross-tenant surface is P6 (named platform roles).
+        private const string PlatformFlagPredicate = "current_setting('app.platform', true) = 'true'";
+
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -87,6 +97,9 @@ namespace ControlPlane.Api.Migrations
                 var checkClause = check is null ? string.Empty : $" WITH CHECK ({check})";
                 migrationBuilder.Sql($"CREATE POLICY {name} ON {table} USING ({usingExpr}){checkClause};");
             }
+
+            // Cross-tenant read of the tenant registry for platform/system operations.
+            migrationBuilder.Sql($"CREATE POLICY tenants_platform_read ON tenants USING ({PlatformFlagPredicate});");
         }
 
         /// <inheritdoc />
@@ -96,6 +109,8 @@ namespace ControlPlane.Api.Migrations
             {
                 return;
             }
+
+            migrationBuilder.Sql("DROP POLICY IF EXISTS tenants_platform_read ON tenants;");
 
             foreach (var (name, table, _, _) in DeviceAuthPolicies)
             {
