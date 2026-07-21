@@ -30,15 +30,39 @@ transaction-scoped, so pooled connections never leak context across requests.
 
 **Enforcement shape for the current per-operation store.** Today
 `EfControlPlaneStore` does `using var db = _factory.CreateDbContext()` per method
-with no explicit transaction. `SET LOCAL` requires a transaction, so we introduce
-a `TenantContext` (ambient, set by request middleware from the verified session)
-and a small `TenantScope` helper that every tenant-touching store method opens:
-it begins a transaction and sets the GUCs before running the operation. Device
-endpoints (gateway credential auth) set `app.tenant_id` to the gateway's tenant
-after credential validation. Admin/platform operations set a dedicated
-`app.tenant_id` per targeted tenant, or use a separate elevated policy path
-(P6). This keeps RLS as **defense-in-depth**: the app-layer `tenant_id` filters
-stay.
+with no explicit transaction. `SET LOCAL` requires a transaction, so a small
+`TenantScope` helper (`TenantScope.cs`) wraps each tenant-touching operation: it
+`BEGIN`s a transaction and binds the GUC via
+`set_config('app.tenant_id', <id>, true)` (the parameterised, function form of
+`SET LOCAL`), then the operation runs and `Complete()` commits. It is a no-op
+under the in-memory provider (tests), so behaviour there is unchanged.
+
+*Implemented* (this branch): the tenant id is sourced from the `tenantId` the
+store method already receives, which the endpoint layer has already authorised
+against the caller's verified membership (`AuthorizedInTenant`) — so it is the
+verified tenant, never a raw request field, and RLS becomes true
+defense-in-depth beneath the app-layer `tenant_id` filters (which stay). The
+scoped methods: `CreateTenant` (bound to the new tenant's id, satisfying the
+`tenants` WITH CHECK), `RenameTenant`, `DeactivateTenant`/`ReactivateTenant`,
+`IssueBootstrapToken`, `DecommissionGateway`, `GatewaysFor`, `PublishConfig`,
+`AuditFor`.
+
+*Two elevated paths remain* (deliberately unscoped, flagged in code, required
+before FORCE RLS goes live — see §Rollout):
+1. **Platform / cross-tenant reads** (`Tenants()`, `TenantExists`,
+   `FindTenant`): enumerate across tenants, so they cannot run under a single
+   tenant GUC — they need the P6 platform role (BYPASSRLS or a cross-tenant
+   policy behind `/platform-admin`).
+2. **Device-plane auth bootstrapping** (`Enroll`, `ValidateDeviceCredential`,
+   `RecordHeartbeat`, `RecordTelemetry`, `TenantOfGateway`, `CurrentConfig`):
+   the tenant is unknown until a bootstrap token / device credential is
+   validated, but reading that secret is what RLS would block — needs a narrow
+   by-PK+secret device-auth policy, after which the operation sets
+   `app.tenant_id` to the resolved tenant for its writes.
+
+A later `TenantContext` (ambient, set by request middleware) can additionally
+bind `app.user_id`/`app.membership_id`/`app.support_grant_id` for user-scoped
+policies and richer audit; not required for tenant isolation and deferred.
 
 ### 3. RLS policies per table
 `ENABLE` + `FORCE ROW LEVEL SECURITY` on every tenant-owned table, each with one
@@ -89,6 +113,14 @@ was applied to a throwaway `postgres:16`, then exercised as the least-privilege
 - **tenant scoping** — `app.tenant_id='t1'` shows only t1's gateway, tenant row,
   and (via the gateway-join policy) only t1's device credential;
 - **cross-tenant INSERT** of a `t2` gateway under t1 context is rejected by `WITH CHECK`.
+
+`TenantScope`'s exact SQL was then proven as the least-privilege `app_runtime`
+role: `set_config('app.tenant_id', 't1', true)` inside a transaction scopes the
+following query to t1; on the **same** connection *between* transactions the GUC
+is cleared ⇒ 0 rows (proves no context leaks across pooled connections — the
+reason for `SET LOCAL`/local `set_config` over session `SET`); a second
+transaction rebinds to t2 cleanly. This is precisely EF's per-operation
+transaction lifecycle, so the helper binds correctly against real Postgres.
 
 ## Consequences
 

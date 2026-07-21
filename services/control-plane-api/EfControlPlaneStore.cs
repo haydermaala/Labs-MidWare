@@ -27,11 +27,25 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     {
         using var db = _factory.CreateDbContext();
         var entity = new TenantEntity { Id = Ids.New("ten"), Name = name, CreatedAt = _clock.GetUtcNow(), Active = true };
+        // Scope to the NEW tenant's id: the `tenants` WITH CHECK policy requires
+        // the inserted row's "Id" to equal app.tenant_id, and the audit row is
+        // written under the same tenant.
+        using var scope = TenantScope.Begin(db, entity.Id);
         db.Tenants.Add(entity);
         Audit(db, "tenant.created", entity.Id, entity.Name);
         db.SaveChanges();
+        scope.Complete();
         return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active);
     }
+
+    // ── Platform / cross-tenant reads (NOT tenant-scoped) ────────────────────
+    // These enumerate or probe across tenants and so cannot run under a single
+    // tenant GUC. They are invoked only by the platform-admin surface (today the
+    // AdminToken). Before FORCE RLS is enabled on the live DB, they must run via
+    // the platform-elevated path (P6: named platform roles behind /platform-admin,
+    // whose DB role has BYPASSRLS or a dedicated cross-tenant policy). Until then
+    // the app connects as the owner role, for which the migration is not yet
+    // merged (ADR 0018 §Rollout), so no behaviour changes.
 
     public IReadOnlyCollection<Tenant> Tenants()
     {
@@ -60,6 +74,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     public Tenant? RenameTenant(string tenantId, string name)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
         if (tenant is null)
         {
@@ -68,6 +83,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         tenant.Name = name;
         Audit(db, "tenant.renamed", tenantId, name);
         db.SaveChanges();
+        scope.Complete();
         return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active);
     }
 
@@ -78,6 +94,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     private bool SetTenantActive(string tenantId, bool active)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
         if (tenant is null)
         {
@@ -89,12 +106,14 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
             Audit(db, active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
             db.SaveChanges();
         }
+        scope.Complete();
         return true;
     }
 
     public bool DecommissionGateway(string tenantId, string gatewayId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId && g.TenantId == tenantId);
         if (gateway is null)
         {
@@ -104,6 +123,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             gateway.Active = false;
             // Revoke the device credential so the gateway can no longer authenticate.
+            // Visible under the tenant scope via the device_credentials gateway-join policy.
             var credential = db.DeviceCredentials.FirstOrDefault(c => c.GatewayId == gatewayId);
             if (credential is not null)
             {
@@ -112,12 +132,14 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
             Audit(db, "gateway.decommissioned", tenantId, gatewayId);
             db.SaveChanges();
         }
+        scope.Complete();
         return true;
     }
 
     public BootstrapTokenView? IssueBootstrapToken(string tenantId, TimeSpan ttl)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         if (!db.Tenants.AsNoTracking().Any(t => t.Id == tenantId && t.Active))
         {
             return null;
@@ -132,8 +154,22 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         db.BootstrapTokens.Add(token);
         Audit(db, "enrollment.token_issued", tenantId, "bootstrap token issued");
         db.SaveChanges();
+        scope.Complete();
         return new BootstrapTokenView(token.Token, token.ExpiresAt);
     }
+
+    // ── Device-plane (NOT tenant-scoped yet) ─────────────────────────────────
+    // Enroll, ValidateDeviceCredential, RecordHeartbeat, RecordTelemetry,
+    // TenantOfGateway and CurrentConfig are reached by a gateway that presents a
+    // bootstrap token or a gateway-id + device credential — the tenant is not
+    // known until *after* that secret is validated, but reading the token/
+    // credential/gateway to validate it is exactly what tenant RLS would block
+    // (chicken-and-egg). These need a bounded device-auth path before FORCE RLS:
+    // a narrow policy permitting a by-primary-key + secret lookup on
+    // bootstrap_tokens / device_credentials / gateways with no tenant context,
+    // after which the operation sets app.tenant_id to the resolved tenant for any
+    // writes. Designed and applied in the staged rollout (ADR 0018 §Rollout);
+    // shadow-mode logging surfaces any device path that still lacks context.
 
     public EnrollmentResult? Enroll(string bootstrapToken, string gatewayName)
     {
@@ -181,8 +217,9 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     public IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var now = _clock.GetUtcNow();
-        return db.Gateways.AsNoTracking()
+        var result = db.Gateways.AsNoTracking()
             .Where(g => g.TenantId == tenantId)
             .OrderBy(g => g.EnrolledAt)
             .AsEnumerable() // status is derived against 'now'; compute after materializing
@@ -191,6 +228,8 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
                 GatewayLiveness.Status(g.Active, g.LastSeenAt, now),
                 new GatewayTelemetry(g.CapturedCount, g.PendingCount, g.DeliveredCount, g.DeadCount, g.LastCaptureAt)))
             .ToList();
+        scope.Complete();
+        return result;
     }
 
     public bool ValidateDeviceCredential(string gatewayId, string credential)
@@ -246,6 +285,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     public ConfigView? PublishConfig(string tenantId, string gatewayId, string settingsJson)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var ownerTenant = db.Gateways.AsNoTracking()
             .Where(g => g.Id == gatewayId)
             .Select(g => g.TenantId)
@@ -277,6 +317,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         }
         Audit(db, "config.published", tenantId, $"{gatewayId} v{existing.Version}");
         db.SaveChanges();
+        scope.Complete();
         return new ConfigView(gatewayId, existing.Version, existing.Environment, existing.SettingsJson, existing.PublishedAt);
     }
 
@@ -296,10 +337,13 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
     public IReadOnlyCollection<AuditEvent> AuditFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Audit.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var result = db.Audit.AsNoTracking()
             .Where(e => e.TenantId == tenantId)
             .OrderBy(e => e.At).ThenBy(e => e.Id)
             .Select(e => new AuditEvent(e.At, e.Kind, e.TenantId, e.Detail))
             .ToList();
+        scope.Complete();
+        return result;
     }
 }
