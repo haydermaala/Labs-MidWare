@@ -116,6 +116,9 @@ if (postgres is not null)
     SchemaBootstrap.Apply(db);
     // Mirror the code permission catalog into permission_definitions (ADR 0019).
     PermissionCatalogSync.Apply(db);
+    // Seed tenant-root role assignments from existing memberships (ADR 0020) so the
+    // scope-aware engine can later be wired in without any member losing access.
+    MembershipAssignmentBackfill.Apply(db, scope.ServiceProvider.GetRequiredService<TimeProvider>());
 }
 
 // Security response headers on every response. This service serves both the JSON
