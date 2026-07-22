@@ -29,6 +29,33 @@ public sealed class PermissionEngineTests
     };
 
     [Fact]
+    public void Custom_Role_Is_Granted_Only_Through_The_Custom_Grants_Dictionary()
+    {
+        var enroll = Permissions.FleetGatewayEnroll.Key;
+        var custom = new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal)
+        {
+            ["enroller"] = new HashSet<string>(StringComparer.Ordinal) { enroll },
+        };
+
+        // With its custom grant, the non-baseline role is allowed.
+        Assert.True(Engine.Authorize(new AuthorizationRequest(
+            ["enroller"], enroll, MfaSatisfied: true, FreshAuth: true, ApprovalGranted: true, CustomGrants: custom))
+            .IsAllowed);
+
+        // Without the dictionary, a non-baseline role grants nothing (deny-by-default) —
+        // this is exactly the pre-P3 behavior, so baseline callers are unaffected.
+        Assert.False(Engine.Authorize(new AuthorizationRequest(
+            ["enroller"], enroll, MfaSatisfied: true, FreshAuth: true, ApprovalGranted: true))
+            .IsAllowed);
+
+        // The custom grant does not leak to a permission it does not list.
+        Assert.False(Engine.Authorize(new AuthorizationRequest(
+            ["enroller"], Permissions.TenantRename.Key,
+            MfaSatisfied: true, FreshAuth: true, ApprovalGranted: true, CustomGrants: custom))
+            .IsAllowed);
+    }
+
+    [Fact]
     public void Catalog_Keys_Are_Unique_And_Well_Formed()
     {
         Assert.NotEmpty(Permissions.All);

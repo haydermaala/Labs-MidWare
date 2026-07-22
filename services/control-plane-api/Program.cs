@@ -583,12 +583,13 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         return Results.Unauthorized(); // non-member: indistinguishable from no access
     }
 
-    var (tree, targetScopeId, assignments) = RootScopeContext(tenantId, userId, role);
+    var (tree, targetScopeId, assignments, customGrants) = RootScopeContext(tenantId, userId, role);
     var decision = scopedEngine.Authorize(new ScopedAuthorizationRequest(
         assignments, tree, userId, targetScopeId, permission.Key,
         authzClock.GetUtcNow(),
         MfaSatisfied: current.Value.MfaSatisfied,
-        FreshAuth: current.Value.FreshAuth));
+        FreshAuth: current.Value.FreshAuth,
+        CustomGrants: customGrants));
     return decision.IsAllowed
         ? null
         : Results.Json(
@@ -601,19 +602,26 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
 // preserved exactly), unioned with the caller's persisted root-level grants. A
 // tenant with no persisted scopes yet uses a synthetic single-root tree, so the
 // gate never depends on the startup backfill having run.
-(ScopeTree Tree, string RootId, IReadOnlyCollection<RoleAssignment> Assignments)
+(ScopeTree Tree, string RootId, IReadOnlyCollection<RoleAssignment> Assignments,
+    IReadOnlyDictionary<string, IReadOnlySet<string>>? CustomGrants)
     RootScopeContext(string tenantId, string userId, string membershipRole)
 {
     var tree = scopeService.Tree(tenantId);
     if (tree is null)
     {
+        // No persisted scopes ⇒ no scoped/custom grants possible; membership only.
         var synthetic = ScopeTree.Build([new ScopeNode($"root:{tenantId}", tenantId, ScopeType.Tenant, "", null)]);
         return (synthetic, synthetic.Root.Id,
-            [new RoleAssignment("membership", userId, membershipRole, synthetic.Root.Id, null)]);
+            [new RoleAssignment("membership", userId, membershipRole, synthetic.Root.Id, null)], null);
     }
     var assignments = roleGrants.ActiveAssignmentsFor(tenantId, userId).ToList();
     assignments.Add(new RoleAssignment("membership", userId, membershipRole, tree.Root.Id, null));
-    return (tree, tree.Root.Id, assignments);
+    // Only pay for the custom-grant lookup when the caller actually holds a
+    // non-baseline role somewhere.
+    var customGrants = assignments.Any(a => !Roles.All.Contains(a.Role))
+        ? roleGrants.CustomGrantsFor(tenantId)
+        : null;
+    return (tree, tree.Root.Id, assignments, customGrants);
 }
 
 void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>

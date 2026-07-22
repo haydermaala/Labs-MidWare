@@ -26,7 +26,8 @@ public sealed record ScopedAuthorizationRequest(
     DateTimeOffset Now,
     bool MfaSatisfied = false,
     bool FreshAuth = false,
-    bool ApprovalGranted = false);
+    bool ApprovalGranted = false,
+    IReadOnlyDictionary<string, IReadOnlySet<string>>? CustomGrants = null);
 
 /// <summary>Scope-aware decision point layered over <see cref="IAuthorizationEngine"/>.</summary>
 public interface IScopedAuthorizationEngine
@@ -61,6 +62,7 @@ public sealed class ScopedAuthorizationEngine(IAuthorizationEngine inner) : ISco
             request.PermissionKey,
             request.MfaSatisfied,
             request.FreshAuth,
-            request.ApprovalGranted));
+            request.ApprovalGranted,
+            request.CustomGrants));
     }
 }

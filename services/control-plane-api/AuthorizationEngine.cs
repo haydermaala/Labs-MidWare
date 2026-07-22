@@ -15,12 +15,16 @@ namespace ControlPlane.Api;
 /// <param name="MfaSatisfied">Whether the session has satisfied MFA.</param>
 /// <param name="FreshAuth">Whether the subject re-authenticated recently (step-up).</param>
 /// <param name="ApprovalGranted">Whether a required second-party approval is present.</param>
+/// <param name="CustomGrants">Tenant custom roles as roleKey → permission keys (P3).
+/// Baseline roles resolve from the code matrix regardless; a role that is not a
+/// baseline role is resolved here. Null/empty means baseline-only (pre-P3 behavior).</param>
 public sealed record AuthorizationRequest(
     IReadOnlyCollection<string> Roles,
     string PermissionKey,
     bool MfaSatisfied = false,
     bool FreshAuth = false,
-    bool ApprovalGranted = false);
+    bool ApprovalGranted = false,
+    IReadOnlyDictionary<string, IReadOnlySet<string>>? CustomGrants = null);
 
 /// <summary>Allow or deny.</summary>
 public enum Decision
@@ -60,6 +64,9 @@ public interface IAuthorizationEngine
 /// </summary>
 public sealed class AuthorizationEngine : IAuthorizationEngine
 {
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> NoCustomGrants =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal);
+
     public AuthorizationResult Authorize(AuthorizationRequest request)
     {
         var permission = Permissions.Find(request.PermissionKey);
@@ -74,7 +81,8 @@ public sealed class AuthorizationEngine : IAuthorizationEngine
             return AuthorizationResult.Deny("subject has no active role in this scope");
         }
 
-        var grantedByAnyRole = request.Roles.Any(role => RolePermissions.Grants(role, permission));
+        var customGrants = request.CustomGrants ?? NoCustomGrants;
+        var grantedByAnyRole = request.Roles.Any(role => RoleGrants.Grants(role, permission.Key, customGrants));
         if (!grantedByAnyRole)
         {
             return AuthorizationResult.Deny($"no role in [{string.Join(", ", request.Roles)}] grants '{permission.Key}'");

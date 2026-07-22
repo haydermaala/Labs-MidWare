@@ -13,6 +13,7 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
 
     private static readonly string[] FleetViewPerm = ["fleet.gateway.view"];
     private static readonly string[] TenantDeactivatePerm = ["tenant.tenant.deactivate"];
+    private static readonly string[] FleetEnrollPerm = ["fleet.gateway.enroll"];
 
     public RoleGrantEndpointTests(EmailApiFactory factory) => _factory = factory;
 
@@ -149,6 +150,35 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
         Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(
             $"/api/tenants/{tenant}/role-assignments",
             new { userId = memberId, role = "lab-admin", scopeId = root.Id })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Custom_Role_Granted_At_Root_Is_Enforced_By_The_Gate()
+    {
+        var tenant = await NewTenant("Custom Enforce Lab");
+        var (ownerId, ownerSession) = await NewUser("ce-owner@example.test");
+        await GrantMembership(ownerId, tenant, "owner");
+        var (memberId, memberSession) = await NewUser("ce-member@example.test");
+        await GrantMembership(memberId, tenant, "read-only");
+        var owner = Session(ownerSession);
+        var member = Session(memberSession);
+
+        var root = (await (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes", new { name = "HQ" }))
+            .Content.ReadFromJsonAsync<ScopeDto>())!;
+
+        // A read-only member cannot issue enrollment tokens.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+
+        // Owner defines a custom role granting exactly the enroll permission, and grants it at root.
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/custom-roles",
+            new { roleKey = "enroller", name = "Enroller", permissionKeys = FleetEnrollPerm })).StatusCode);
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/role-assignments",
+            new { userId = memberId, role = "enroller", scopeId = root.Id })).StatusCode);
+
+        // The custom role now takes effect through the gate: the member can enroll.
         Assert.Equal(HttpStatusCode.OK,
             (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
     }

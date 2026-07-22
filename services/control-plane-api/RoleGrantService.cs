@@ -201,6 +201,21 @@ public sealed class RoleGrantService
             CustomRoleOutcome.Ok, new CustomRoleView(entity.RoleKey, entity.Name, [.. desired.Order(StringComparer.Ordinal)]), []);
     }
 
+    /// <summary>A tenant's custom roles as roleKey → permission keys, for the
+    /// authorization engine to resolve non-baseline roles.</summary>
+    public IReadOnlyDictionary<string, IReadOnlySet<string>> CustomGrantsFor(string tenantId)
+    {
+        using var db = _factory.CreateDbContext();
+        return db.RolePermissions.AsNoTracking()
+            .Where(rp => rp.TenantId == tenantId)
+            .AsEnumerable()
+            .GroupBy(rp => rp.RoleKey, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => (IReadOnlySet<string>)g.Select(rp => rp.PermissionKey).ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal);
+    }
+
     /// <summary>A tenant's custom roles with their permission keys.</summary>
     public IReadOnlyList<CustomRoleView> CustomRolesFor(string tenantId)
     {
