@@ -162,8 +162,16 @@ app.UseRateLimiter();
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];
 
-// Central authorization engine — the gate for tenant-scoped endpoints (ADR 0019).
-var authzEngine = app.Services.GetRequiredService<IAuthorizationEngine>();
+// Scope-aware authorization — the gate for tenant-scoped endpoints (ADR 0020,
+// layered over the P2 engine of ADR 0019). Every tenant-scoped endpoint is
+// authorized at the tenant ROOT scope: the caller's membership role is synthesized
+// as a root assignment (so today's tenant-wide access is preserved exactly), then
+// unioned with their persisted root-level grants (so explicit grants can add
+// access). A finer target scope per resource is a later slice.
+var scopedEngine = app.Services.GetRequiredService<IScopedAuthorizationEngine>();
+var scopeService = app.Services.GetRequiredService<ScopeService>();
+var roleGrants = app.Services.GetRequiredService<RoleGrantService>();
+var authzClock = app.Services.GetRequiredService<TimeProvider>();
 
 bool IsAdmin(HttpRequest req) =>
     !string.IsNullOrEmpty(adminToken) &&
@@ -544,16 +552,15 @@ app.MapPost("/api/tenants/{tenantId}/custom-roles",
 }
 
 // Tenant-scoped authorization: the platform admin token passes everything;
-// otherwise the session user's membership role in THAT tenant must satisfy the
-// capability. Checked server-side on every tenant operation (no client claims).
-// Authorization gate for a tenant-scoped endpoint (ADR 0019). Returns null when
-// the request is permitted, or the IResult to return when it is denied. The
-// authorization engine is now authoritative.
+// otherwise the session user's roles at the tenant ROOT scope must satisfy the
+// permission. Checked server-side on every tenant operation (no client claims).
+// Scope-aware gate (ADR 0020, over the ADR 0019 engine). Returns null when the
+// request is permitted, or the IResult to return when it is denied.
 //
 // Status choice preserves anti-enumeration: an unauthenticated caller OR a
 // non-member gets 401 — indistinguishable from "no such tenant", so it never
 // reveals a tenant's existence or a user's (lack of) membership across tenants
-// (the cross-tenant IDOR case). A caller who IS a member but whose role lacks the
+// (the cross-tenant IDOR case). A caller who IS a member but whose roles lack the
 // permission (or who needs step-up) gets 403 with the engine's reason — safe,
 // since they already know it is their tenant, and the reason drives the UI (e.g.
 // prompting re-authentication for a fresh-auth-gated action).
@@ -569,14 +576,17 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     {
         return Results.Unauthorized();
     }
-    var role = members.RoleIn(current.Value.User.Id, tenantId);
+    var userId = current.Value.User.Id;
+    var role = members.RoleIn(userId, tenantId);
     if (role is null)
     {
         return Results.Unauthorized(); // non-member: indistinguishable from no access
     }
 
-    var decision = authzEngine.Authorize(new AuthorizationRequest(
-        [role], permission.Key,
+    var (tree, targetScopeId, assignments) = RootScopeContext(tenantId, userId, role);
+    var decision = scopedEngine.Authorize(new ScopedAuthorizationRequest(
+        assignments, tree, userId, targetScopeId, permission.Key,
+        authzClock.GetUtcNow(),
         MfaSatisfied: current.Value.MfaSatisfied,
         FreshAuth: current.Value.FreshAuth));
     return decision.IsAllowed
@@ -584,6 +594,26 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         : Results.Json(
             new { error = decision.Reason, stepUp = decision.RequiresStepUp },
             statusCode: StatusCodes.Status403Forbidden);
+}
+
+// The scope context for a tenant-wide endpoint: authorize at the tenant ROOT with
+// the membership role synthesized as a root assignment (so tenant-wide access is
+// preserved exactly), unioned with the caller's persisted root-level grants. A
+// tenant with no persisted scopes yet uses a synthetic single-root tree, so the
+// gate never depends on the startup backfill having run.
+(ScopeTree Tree, string RootId, IReadOnlyCollection<RoleAssignment> Assignments)
+    RootScopeContext(string tenantId, string userId, string membershipRole)
+{
+    var tree = scopeService.Tree(tenantId);
+    if (tree is null)
+    {
+        var synthetic = ScopeTree.Build([new ScopeNode($"root:{tenantId}", tenantId, ScopeType.Tenant, "", null)]);
+        return (synthetic, synthetic.Root.Id,
+            [new RoleAssignment("membership", userId, membershipRole, synthetic.Root.Id, null)]);
+    }
+    var assignments = roleGrants.ActiveAssignmentsFor(tenantId, userId).ToList();
+    assignments.Add(new RoleAssignment("membership", userId, membershipRole, tree.Root.Id, null));
+    return (tree, tree.Root.Id, assignments);
 }
 
 void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>

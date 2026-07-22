@@ -118,6 +118,42 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Root_Grant_Elevates_Access_While_A_Child_Scope_Grant_Does_Not_Leak()
+    {
+        var tenant = await NewTenant("Elevate Lab");
+        var (ownerId, ownerSession) = await NewUser("elev-owner@example.test");
+        await GrantMembership(ownerId, tenant, "owner");
+        var (memberId, memberSession) = await NewUser("elev-member@example.test");
+        await GrantMembership(memberId, tenant, "read-only");
+        var owner = Session(ownerSession);
+        var member = Session(memberSession);
+
+        var root = (await (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes", new { name = "HQ" }))
+            .Content.ReadFromJsonAsync<ScopeDto>())!;
+        var lab = (await (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes",
+            new { parentId = root.Id, type = "Laboratory", name = "Haematology" }))
+            .Content.ReadFromJsonAsync<ScopeDto>())!;
+
+        // Baseline: a read-only member cannot issue enrollment tokens (needs ManageFleet).
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+
+        // A lab-admin grant at a CHILD scope must not reach a tenant-wide endpoint.
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/role-assignments",
+            new { userId = memberId, role = "lab-admin", scopeId = lab.Id })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+
+        // The same grant at the ROOT scope elevates the member tenant-wide.
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/role-assignments",
+            new { userId = memberId, role = "lab-admin", scopeId = root.Id })).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+    }
+
+    [Fact]
     public async Task Delegation_Limits_Surface_As_403_On_Grant_And_Custom_Role()
     {
         var tenant = await NewTenant("Deleg Lab");

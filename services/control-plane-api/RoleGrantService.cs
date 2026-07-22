@@ -111,6 +111,18 @@ public sealed class RoleGrantService
         return true;
     }
 
+    /// <summary>The subject's non-revoked assignments in the tenant as model records,
+    /// for the scope-aware engine (which further ignores any that are expired).</summary>
+    public IReadOnlyList<RoleAssignment> ActiveAssignmentsFor(string tenantId, string userId)
+    {
+        using var db = _factory.CreateDbContext();
+        return db.RoleAssignments.AsNoTracking()
+            .Where(a => a.TenantId == tenantId && a.UserId == userId && a.RevokedAt == null)
+            .AsEnumerable()
+            .Select(a => new RoleAssignment(a.Id, a.UserId, a.Role, a.ScopeId, a.ExpiresAt))
+            .ToList();
+    }
+
     /// <summary>A tenant's role assignments, newest last; optionally for one user.</summary>
     public IReadOnlyList<RoleAssignmentView> AssignmentsFor(string tenantId, string? userId)
     {
