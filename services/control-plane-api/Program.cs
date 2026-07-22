@@ -58,6 +58,7 @@ builder.Services.AddSingleton<IAuthorizationEngine, AuthorizationEngine>();
 builder.Services.AddSingleton<IScopedAuthorizationEngine, ScopedAuthorizationEngine>();
 builder.Services.AddSingleton<ScopeService>();
 builder.Services.AddSingleton<RoleGrantService>();
+builder.Services.AddSingleton<ApprovalService>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.
@@ -551,6 +552,84 @@ app.MapPost("/api/tenants/{tenantId}/custom-roles",
         body.RoleKey, body.Name, body.PermissionKeys ?? []));
 });
 
+// --- P3: two-party approvals (dynamic SoD, ADR 0020 §5) ---------------------
+// An approval-gated permission (RequiresApproval) cannot be done in one shot: a
+// requester who is entitled to the action opens a request, and a DISTINCT entitled
+// party approves it, at which point the action runs. Entitlement is the normal gate
+// with approval treated satisfied (so the two-party rule is the only thing left);
+// the distinct-party rule itself is enforced by ApprovalService.
+IResult DecideResult(ApprovalService.DecideOutcome outcome, Func<IResult> onOk) => outcome switch
+{
+    ApprovalService.DecideOutcome.Ok => onOk(),
+    ApprovalService.DecideOutcome.NotFound => Results.NotFound(),
+    ApprovalService.DecideOutcome.NotPending => Results.Conflict(new { error = "request is not pending" }),
+    ApprovalService.DecideOutcome.SameParty => Results.Json(
+        new { error = "the approver must be a different person than the requester" },
+        statusCode: StatusCodes.Status403Forbidden),
+    _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
+};
+
+// Perform a now-approved action. Extended as more actions become approval-gated.
+IResult PerformApproved(ApprovalRequestEntity request, IControlPlaneStore store)
+{
+    if (request.PermissionKey == Permissions.TenantDeactivate.Key)
+    {
+        store.DeactivateTenant(request.TenantId);
+    }
+    return Results.NoContent();
+}
+
+app.MapPost("/api/tenants/{tenantId}/approvals",
+    (string tenantId, CreateApprovalRequest body, ApprovalService approvals, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    var permission = body.PermissionKey is null ? null : Permissions.Find(body.PermissionKey);
+    if (permission is null || !permission.RequiresApproval)
+    {
+        return Results.BadRequest(new { error = "unknown or non-approval-gated permission" });
+    }
+    // Entitlement to request = entitlement to the action itself, setting aside the
+    // second-party requirement (approvalSatisfied). Tenant-wide actions gate at root.
+    if (Forbidden(req, auth, members, tenantId, permission, approvalSatisfied: true) is { } denied) return denied;
+    var requesterUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var created = approvals.Create(tenantId, permission.Key, null, requesterUserId, body.TargetId, body.Note);
+    return created is null
+        ? Results.BadRequest(new { error = "could not create request" })
+        : Results.Json(created, statusCode: StatusCodes.Status202Accepted);
+});
+
+app.MapGet("/api/tenants/{tenantId}/approvals",
+    (string tenantId, ApprovalService approvals, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.TenantSettingsView) is { } denied) return denied;
+    return Results.Json(approvals.Pending(tenantId));
+});
+
+app.MapPost("/api/tenants/{tenantId}/approvals/{requestId}/approve",
+    (string tenantId, string requestId, ApprovalService approvals, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    var request = approvals.Find(tenantId, requestId);
+    if (request is null) return Results.NotFound();
+    var permission = Permissions.Find(request.PermissionKey);
+    if (permission is null) return Results.NotFound();
+    // The approver must themselves be entitled to the action (at the request's scope).
+    if (Forbidden(req, auth, members, tenantId, permission, request.ScopeId, approvalSatisfied: true) is { } denied) return denied;
+    var approverUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return DecideResult(approvals.Approve(tenantId, requestId, approverUserId),
+        () => PerformApproved(request, store));
+});
+
+app.MapPost("/api/tenants/{tenantId}/approvals/{requestId}/reject",
+    (string tenantId, string requestId, ApprovalService approvals, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    var request = approvals.Find(tenantId, requestId);
+    if (request is null) return Results.NotFound();
+    var permission = Permissions.Find(request.PermissionKey);
+    if (permission is null) return Results.NotFound();
+    if (Forbidden(req, auth, members, tenantId, permission, request.ScopeId, approvalSatisfied: true) is { } denied) return denied;
+    var approverUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return DecideResult(approvals.Reject(tenantId, requestId, approverUserId), Results.NoContent);
+});
+
 // --- identity: users + sessions (Phase C1) ---------------------------------
 // Session resolution: `Authorization: Bearer ses_…` (SPA) or the `lc_session`
 // HttpOnly cookie (same-site browser use). Cookie hardening to __Host- prefix +
@@ -584,7 +663,8 @@ app.MapPost("/api/tenants/{tenantId}/custom-roles",
 // since they already know it is their tenant, and the reason drives the UI (e.g.
 // prompting re-authentication for a fresh-auth-gated action).
 IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
-    string tenantId, PermissionDefinition permission, string? resourceScopeId = null)
+    string tenantId, PermissionDefinition permission, string? resourceScopeId = null,
+    bool approvalSatisfied = false)
 {
     if (IsAdmin(req))
     {
@@ -615,6 +695,7 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         authzClock.GetUtcNow(),
         MfaSatisfied: current.Value.MfaSatisfied,
         FreshAuth: current.Value.FreshAuth,
+        ApprovalGranted: approvalSatisfied,
         CustomGrants: customGrants));
     return decision.IsAllowed
         ? null
@@ -1033,6 +1114,9 @@ internal sealed record CreateScopeRequest(string? ParentId, string? Type, string
 
 /// <summary>Pin a gateway to an org scope (null clears it to tenant-wide).</summary>
 internal sealed record AssignScopeRequest(string? ScopeId);
+
+/// <summary>Open a two-party approval request for an approval-gated permission.</summary>
+internal sealed record CreateApprovalRequest(string? PermissionKey, string? TargetId, string? Note);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

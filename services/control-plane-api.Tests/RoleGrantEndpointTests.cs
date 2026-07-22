@@ -25,6 +25,7 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record ScopeDto(string Id, string Type, string Name, string? ParentId, string Path);
     private sealed record BootstrapDto(string Token, DateTimeOffset ExpiresAt);
     private sealed record EnrollDto(string GatewayId, string TenantId, string DeviceCredential);
+    private sealed record ApprovalDto(string Id, string PermissionKey, string Status);
 
     private HttpClient Admin()
     {
@@ -207,6 +208,47 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
         // …but NOT the Lab B gateway — the grant does not reach a sibling scope.
         Assert.Equal(HttpStatusCode.Forbidden,
             (await member.PostAsync($"/api/tenants/{tenant}/gateways/{gwB}/decommission", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Tenant_Deactivate_Requires_A_Distinct_Second_Approver()
+    {
+        var tenant = await NewTenant("Approval Lab");
+        var (owner1Id, owner1Session) = await NewUser("ap-owner1@example.test");
+        await GrantMembership(owner1Id, tenant, "owner");
+        var (owner2Id, owner2Session) = await NewUser("ap-owner2@example.test");
+        await GrantMembership(owner2Id, tenant, "owner");
+        var (memberId, memberSession) = await NewUser("ap-member@example.test");
+        await GrantMembership(memberId, tenant, "read-only");
+        var owner1 = Session(owner1Session);
+        var owner2 = Session(owner2Session);
+        var member = Session(memberSession);
+
+        // A single-shot deactivate by an entitled owner is refused — it needs approval.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await owner1.PostAsync($"/api/tenants/{tenant}/deactivate", null)).StatusCode);
+
+        // A member who lacks the permission cannot even open the request.
+        Assert.Equal(HttpStatusCode.Forbidden, (await member.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/approvals", new { permissionKey = "tenant.tenant.deactivate" })).StatusCode);
+
+        // Owner 1 opens the request.
+        var opened = await owner1.PostAsJsonAsync($"/api/tenants/{tenant}/approvals",
+            new { permissionKey = "tenant.tenant.deactivate", note = "end of contract" });
+        Assert.Equal(HttpStatusCode.Accepted, opened.StatusCode);
+        var request = (await opened.Content.ReadFromJsonAsync<ApprovalDto>())!;
+
+        // Owner 1 may not approve their own request (dynamic SoD).
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await owner1.PostAsync($"/api/tenants/{tenant}/approvals/{request.Id}/approve", null)).StatusCode);
+
+        // A distinct owner approves → the action runs and the tenant is deactivated.
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await owner2.PostAsync($"/api/tenants/{tenant}/approvals/{request.Id}/approve", null)).StatusCode);
+
+        // Deactivation took effect: enrollment tokens are now blocked (as when deactivated directly).
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await Admin().PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
     }
 
     [Fact]

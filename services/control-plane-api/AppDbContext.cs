@@ -34,6 +34,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<SodRuleEntity> SodRules => Set<SodRuleEntity>();
     public DbSet<CustomRoleEntity> CustomRoles => Set<CustomRoleEntity>();
     public DbSet<RolePermissionEntity> RolePermissions => Set<RolePermissionEntity>();
+    public DbSet<ApprovalRequestEntity> ApprovalRequests => Set<ApprovalRequestEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -191,6 +192,14 @@ public sealed class AppDbContext : DbContext
         {
             // A custom role's granted permissions (P3).
             e.ToTable("role_permissions");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<ApprovalRequestEntity>(e =>
+        {
+            // Two-party approval requests for approval-gated actions (P3, dynamic SoD).
+            e.ToTable("approval_requests");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TenantId);
         });
@@ -475,4 +484,32 @@ public sealed class RolePermissionEntity
     public string TenantId { get; set; } = "";
     public string RoleKey { get; set; } = "";
     public string PermissionKey { get; set; } = "";
+}
+
+/// <summary>A pending/decided request to perform an approval-gated action (P3,
+/// dynamic SoD). Created by a requester who is entitled to the action; a distinct
+/// second entitled party must approve it before it executes. <see cref="ScopeId"/>
+/// is where the action is authorized (null = tenant-wide/root); <see cref="TargetId"/>
+/// names the sub-resource for actions that target one (null for tenant-wide).</summary>
+public sealed class ApprovalRequestEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string PermissionKey { get; set; } = "";
+    public string? ScopeId { get; set; }
+    public string? TargetId { get; set; }
+    public string RequesterUserId { get; set; } = "";
+    public string? Note { get; set; }
+    public string Status { get; set; } = ApprovalStatus.Pending;
+    public DateTimeOffset CreatedAt { get; set; }
+    public string? DecidedByUserId { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
+}
+
+/// <summary>The lifecycle states of an <see cref="ApprovalRequestEntity"/>.</summary>
+public static class ApprovalStatus
+{
+    public const string Pending = "pending";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
 }
