@@ -543,9 +543,16 @@ app.MapGet("/api/tenants/{tenantId}/custom-roles",
 });
 
 app.MapPost("/api/tenants/{tenantId}/custom-roles",
-    (string tenantId, CreateCustomRoleRequest body, AuthService auth, MembershipService members, RoleGrantService grants, HttpRequest req) =>
+    (string tenantId, CreateCustomRoleRequest body, AuthService auth, MembershipService members, RoleGrantService grants, BillingService billing, HttpRequest req) =>
 {
     if (Forbidden(req, auth, members, tenantId, Permissions.MembersMemberChangeRole) is { } denied) return denied;
+    // Defining custom roles is a paid entitlement (listing/granting them is not).
+    if (!billing.HasFeature(tenantId, PlanFeatures.CustomRoles))
+    {
+        return Results.Json(
+            new { error = "defining custom roles requires a paid plan", feature = PlanFeatures.CustomRoles },
+            statusCode: StatusCodes.Status402PaymentRequired);
+    }
     var creatorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
     return CustomRoleOutcomeResult(tenantId, grants.CreateCustomRole(
         tenantId, creatorUserId, ActorRole(req, auth, members, tenantId),

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace ControlPlane.Api.Tests;
 
@@ -54,6 +55,12 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
             new { email, password = "correct horse battery staple" });
         return (user.Id, (await login.Content.ReadFromJsonAsync<LoginDto>())!.SessionToken);
     }
+
+    // Custom roles are a paid entitlement; move the tenant onto a paid plan.
+    private void UpgradeToPaid(string tenantId) =>
+        _factory.Services.GetRequiredService<BillingService>()
+            .UpsertSubscription(tenantId, Plans.Pilot, SubscriptionStatus.Active,
+                "cus_test", "sub_test", DateTimeOffset.UtcNow.AddDays(30), false);
 
     private async Task GrantMembership(string userId, string tenantId, string role) =>
         Assert.Equal(HttpStatusCode.NoContent, (await Admin().PostAsJsonAsync("/api/admin/memberships",
@@ -255,6 +262,7 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     public async Task Custom_Role_Granted_At_Root_Is_Enforced_By_The_Gate()
     {
         var tenant = await NewTenant("Custom Enforce Lab");
+        UpgradeToPaid(tenant);
         var (ownerId, ownerSession) = await NewUser("ce-owner@example.test");
         await GrantMembership(ownerId, tenant, "owner");
         var (memberId, memberSession) = await NewUser("ce-member@example.test");
@@ -284,6 +292,7 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     public async Task Delegation_Limits_Surface_As_403_On_Grant_And_Custom_Role()
     {
         var tenant = await NewTenant("Deleg Lab");
+        UpgradeToPaid(tenant);
         var (ownerId, ownerSession) = await NewUser("deleg-owner@example.test");
         await GrantMembership(ownerId, tenant, "owner");
         var (targetId, _) = await NewUser("deleg-target@example.test");
@@ -306,5 +315,25 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
         Assert.Equal(HttpStatusCode.Forbidden, (await owner.PostAsJsonAsync(
             $"/api/tenants/{tenant}/custom-roles",
             new { roleKey = "danger", name = "Danger", permissionKeys = TenantDeactivatePerm })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Defining_Custom_Roles_Requires_A_Paid_Plan()
+    {
+        var tenant = await NewTenant("Paywall Lab");
+        var (ownerId, ownerSession) = await NewUser("pw-owner@example.test");
+        await GrantMembership(ownerId, tenant, "owner");
+        var owner = Session(ownerSession);
+
+        // On the default Trial plan, defining a custom role is payment-gated (402).
+        Assert.Equal(HttpStatusCode.PaymentRequired, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/custom-roles",
+            new { roleKey = "viewer2", name = "Viewer", permissionKeys = FleetViewPerm })).StatusCode);
+
+        // After upgrading to a paid plan, the same request succeeds.
+        UpgradeToPaid(tenant);
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/custom-roles",
+            new { roleKey = "viewer2", name = "Viewer", permissionKeys = FleetViewPerm })).StatusCode);
     }
 }

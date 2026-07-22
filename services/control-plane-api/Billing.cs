@@ -25,6 +25,18 @@ public sealed record Plan(string Id, string Name, int GatewayQuota, IReadOnlySet
     public bool AllowsGatewayCount(int count) => GatewayQuota < 0 || count < GatewayQuota;
 }
 
+/// <summary>Plan feature-entitlement keys, greppable like the plan ids. Presence in
+/// a plan's <see cref="Plan.Features"/> gates the corresponding capability.</summary>
+public static class PlanFeatures
+{
+    public const string Bidirectional = "bidirectional";
+    public const string Sso = "sso";
+
+    /// <summary>Define tenant-specific custom roles (P3) — a paid entitlement, off
+    /// the free Trial plan.</summary>
+    public const string CustomRoles = "custom-roles";
+}
+
 /// <summary>The built-in plan catalog. Ids align with the public pricing tiers;
 /// "trial" is the default when a tenant has no active subscription.</summary>
 public static class Plans
@@ -37,9 +49,11 @@ public static class Plans
     private static readonly Dictionary<string, Plan> Catalog = new(StringComparer.Ordinal)
     {
         [Trial] = new(Trial, "Trial", GatewayQuota: 2, Features: Set()),
-        [Pilot] = new(Pilot, "Pilot", GatewayQuota: 5, Features: Set()),
-        [Laboratory] = new(Laboratory, "Laboratory", GatewayQuota: 25, Features: Set("bidirectional")),
-        [Network] = new(Network, "Network", GatewayQuota: -1, Features: Set("bidirectional", "sso")),
+        [Pilot] = new(Pilot, "Pilot", GatewayQuota: 5, Features: Set(PlanFeatures.CustomRoles)),
+        [Laboratory] = new(Laboratory, "Laboratory", GatewayQuota: 25,
+            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.CustomRoles)),
+        [Network] = new(Network, "Network", GatewayQuota: -1,
+            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.Sso, PlanFeatures.CustomRoles)),
     };
 
     private static HashSet<string> Set(params string[] features) =>
@@ -140,6 +154,11 @@ public sealed class BillingService
     /// <summary>Whether the tenant may enroll another gateway under its plan quota.</summary>
     public bool CanAddGateway(string tenantId, int currentGatewayCount) =>
         Plans.Resolve(EntitlementsFor(tenantId).PlanId).AllowsGatewayCount(currentGatewayCount);
+
+    /// <summary>Whether the tenant's active plan includes a feature entitlement
+    /// (see <see cref="PlanFeatures"/>).</summary>
+    public bool HasFeature(string tenantId, string feature) =>
+        Plans.Resolve(EntitlementsFor(tenantId).PlanId).Features.Contains(feature);
 
     /// <summary>
     /// Apply a subscription state (from a provider webhook or the fake provider).
