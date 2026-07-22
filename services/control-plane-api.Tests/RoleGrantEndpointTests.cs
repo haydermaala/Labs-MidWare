@@ -23,6 +23,8 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record AssignmentDto(string Id, string UserId, string Role, string ScopeId, bool Active);
     private sealed record CustomRoleDto(string RoleKey, string Name, List<string> PermissionKeys);
     private sealed record ScopeDto(string Id, string Type, string Name, string? ParentId, string Path);
+    private sealed record BootstrapDto(string Token, DateTimeOffset ExpiresAt);
+    private sealed record EnrollDto(string GatewayId, string TenantId, string DeviceCredential);
 
     private HttpClient Admin()
     {
@@ -60,6 +62,19 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
     private async Task<string> SeedScope(string tenantId) =>
         (await (await Admin().PostAsJsonAsync($"/api/tenants/{tenantId}/scopes", new { name = "root" }))
             .Content.ReadFromJsonAsync<ScopeDto>())!.Id;
+
+    private static async Task<ScopeDto> Child(HttpClient owner, string tenant, string parentId, string type, string name) =>
+        (await (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes",
+            new { parentId, type, name })).Content.ReadFromJsonAsync<ScopeDto>())!;
+
+    private async Task<string> EnrollGateway(HttpClient owner, string tenant, string name)
+    {
+        var token = (await (await owner.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null))
+            .Content.ReadFromJsonAsync<BootstrapDto>())!;
+        var enrolled = (await (await _factory.CreateClient().PostAsJsonAsync("/api/gateways/enroll",
+            new { bootstrapToken = token.Token, name })).Content.ReadFromJsonAsync<EnrollDto>())!;
+        return enrolled.GatewayId;
+    }
 
     [Fact]
     public async Task Owner_Grants_Scoped_Role_Nonmember_Gets_401()
@@ -152,6 +167,46 @@ public sealed class RoleGrantEndpointTests : IClassFixture<EmailApiFactory>
             new { userId = memberId, role = "lab-admin", scopeId = root.Id })).StatusCode);
         Assert.Equal(HttpStatusCode.OK,
             (await member.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Lab_Scoped_Grant_Reaches_Only_Its_Own_Gateways()
+    {
+        var tenant = await NewTenant("Scoped Fleet Lab");
+        var (ownerId, ownerSession) = await NewUser("sf-owner@example.test");
+        await GrantMembership(ownerId, tenant, "owner");
+        var (memberId, memberSession) = await NewUser("sf-member@example.test");
+        await GrantMembership(memberId, tenant, "read-only");
+        var owner = Session(ownerSession);
+        var member = Session(memberSession);
+
+        // Org tree: root → labA, labB. One gateway pinned to each lab.
+        var root = (await (await owner.PostAsJsonAsync($"/api/tenants/{tenant}/scopes", new { name = "HQ" }))
+            .Content.ReadFromJsonAsync<ScopeDto>())!;
+        var labA = await Child(owner, tenant, root.Id, "Laboratory", "Lab A");
+        var labB = await Child(owner, tenant, root.Id, "Laboratory", "Lab B");
+        var gwA = await EnrollGateway(owner, tenant, "gw-a");
+        var gwB = await EnrollGateway(owner, tenant, "gw-b");
+        Assert.Equal(HttpStatusCode.NoContent, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/gateways/{gwA}/scope", new { scopeId = labA.Id })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/gateways/{gwB}/scope", new { scopeId = labB.Id })).StatusCode);
+
+        // Before any grant, the read-only member cannot decommission either gateway.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await member.PostAsync($"/api/tenants/{tenant}/gateways/{gwA}/decommission", null)).StatusCode);
+
+        // Grant lab-admin at Lab A only.
+        Assert.Equal(HttpStatusCode.Created, (await owner.PostAsJsonAsync(
+            $"/api/tenants/{tenant}/role-assignments",
+            new { userId = memberId, role = "lab-admin", scopeId = labA.Id })).StatusCode);
+
+        // Now the member can decommission the Lab A gateway…
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await member.PostAsync($"/api/tenants/{tenant}/gateways/{gwA}/decommission", null)).StatusCode);
+        // …but NOT the Lab B gateway — the grant does not reach a sibling scope.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await member.PostAsync($"/api/tenants/{tenant}/gateways/{gwB}/decommission", null)).StatusCode);
     }
 
     [Fact]

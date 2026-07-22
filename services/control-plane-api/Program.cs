@@ -277,20 +277,39 @@ app.MapGet("/api/tenants/{tenantId}/gateways", (string tenantId, IControlPlaneSt
 });
 
 // Decommission a gateway within a tenant: mark inactive and revoke its credential.
+// Authorized at the gateway's own org scope (P3), so a scoped grant reaches only
+// its own gateways.
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/decommission",
     (string tenantId, string gatewayId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (Forbidden(req, auth, members, tenantId, Permissions.FleetGatewayDecommission) is { } denied) return denied;
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetGatewayDecommission,
+        store.GatewayScope(tenantId, gatewayId)) is { } denied) return denied;
     return store.DecommissionGateway(tenantId, gatewayId) ? Results.NoContent() : Results.NotFound();
 });
 
-// Publish a (non-production) config version for a tenant's gateway.
+// Publish a (non-production) config version for a tenant's gateway (at its scope).
 app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/config",
     (string tenantId, string gatewayId, JsonElement settings, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
 {
-    if (Forbidden(req, auth, members, tenantId, Permissions.FleetConfigPublish) is { } denied) return denied;
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetConfigPublish,
+        store.GatewayScope(tenantId, gatewayId)) is { } denied) return denied;
     var view = store.PublishConfig(tenantId, gatewayId, settings.GetRawText());
     return view is null ? Results.NotFound() : Results.Json(view);
+});
+
+// Pin a gateway to an org scope (or clear it to tenant-wide). Tenant-level fleet
+// management, so authorized at the root.
+app.MapPost("/api/tenants/{tenantId}/gateways/{gatewayId}/scope",
+    (string tenantId, string gatewayId, AssignScopeRequest body, IControlPlaneStore store, ScopeService scopes, AuthService auth, MembershipService members, HttpRequest req) =>
+{
+    if (Forbidden(req, auth, members, tenantId, Permissions.FleetGatewayEnroll) is { } denied) return denied;
+    if (body.ScopeId is not null && scopes.Tree(tenantId)?.Find(body.ScopeId) is null)
+    {
+        return Results.BadRequest(new { error = "unknown scope in this tenant" });
+    }
+    return store.AssignGatewayScope(tenantId, gatewayId, body.ScopeId)
+        ? Results.NoContent()
+        : Results.NotFound();
 });
 
 // Tenant audit log (any member role; platform admin).
@@ -565,7 +584,7 @@ app.MapPost("/api/tenants/{tenantId}/custom-roles",
 // since they already know it is their tenant, and the reason drives the UI (e.g.
 // prompting re-authentication for a fresh-auth-gated action).
 IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
-    string tenantId, PermissionDefinition permission)
+    string tenantId, PermissionDefinition permission, string? resourceScopeId = null)
 {
     if (IsAdmin(req))
     {
@@ -583,7 +602,14 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         return Results.Unauthorized(); // non-member: indistinguishable from no access
     }
 
-    var (tree, targetScopeId, assignments, customGrants) = RootScopeContext(tenantId, userId, role);
+    var (tree, rootId, assignments, customGrants) = RootScopeContext(tenantId, userId, role);
+    // Authorize at the resource's own scope when it names one that exists in the
+    // tree; otherwise at the tenant root (tenant-wide endpoints, or an unscoped/
+    // unknown resource). The membership role sits at the root and so still reaches
+    // any target — this only ever narrows which explicit grants apply.
+    var targetScopeId = resourceScopeId is not null && tree.Find(resourceScopeId) is not null
+        ? resourceScopeId
+        : rootId;
     var decision = scopedEngine.Authorize(new ScopedAuthorizationRequest(
         assignments, tree, userId, targetScopeId, permission.Key,
         authzClock.GetUtcNow(),
@@ -1004,6 +1030,9 @@ internal sealed record ChangeRoleRequest(string Role);
 
 /// <summary>Create a scope: a tenant root (no parent) or a child of an existing scope.</summary>
 internal sealed record CreateScopeRequest(string? ParentId, string? Type, string? Name);
+
+/// <summary>Pin a gateway to an org scope (null clears it to tenant-wide).</summary>
+internal sealed record AssignScopeRequest(string? ScopeId);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

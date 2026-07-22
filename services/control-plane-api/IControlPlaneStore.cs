@@ -51,6 +51,15 @@ public interface IControlPlaneStore
     /// <summary>Gateways for a tenant (never returns another tenant's gateways).</summary>
     IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId);
 
+    /// <summary>The org scope a gateway is authorized at, or null for tenant-wide
+    /// (root). Also null when the gateway is not in the tenant, so a caller can
+    /// authorize at the root and let the operation report not-found.</summary>
+    string? GatewayScope(string tenantId, string gatewayId);
+
+    /// <summary>Pin a gateway to an org scope (null clears it to tenant-wide).
+    /// Returns false if the gateway is not in the tenant.</summary>
+    bool AssignGatewayScope(string tenantId, string gatewayId, string? scopeId);
+
     /// <summary>Validate a gateway's device credential.</summary>
     bool ValidateDeviceCredential(string gatewayId, string credential);
 

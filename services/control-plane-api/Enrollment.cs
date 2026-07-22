@@ -29,17 +29,20 @@ public sealed record GatewayTelemetry(
     public static readonly GatewayTelemetry Empty = new(0, 0, 0, 0, null);
 }
 
-/// <summary>An enrolled gateway, scoped to a tenant.</summary>
+/// <summary>An enrolled gateway, scoped to a tenant. <see cref="ScopeId"/> is the
+/// org scope it sits in for scope-aware authorization (null = tenant-wide / root).</summary>
 public sealed record Gateway(
     string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active,
-    DateTimeOffset? LastSeenAt, GatewayTelemetry Telemetry);
+    DateTimeOffset? LastSeenAt, GatewayTelemetry Telemetry, string? ScopeId = null);
 
 /// <summary>Public view of a gateway (no credential). A decommissioned gateway has
 /// Active=false and its credential revoked. <see cref="Status"/> is a derived
-/// liveness label from <see cref="LastSeenAt"/>. Telemetry is the last self-report.</summary>
+/// liveness label from <see cref="LastSeenAt"/>. Telemetry is the last self-report.
+/// <see cref="ScopeId"/> is its org scope (null = tenant-wide).</summary>
 public sealed record GatewayView(
     string Id, string TenantId, string Name, DateTimeOffset EnrolledAt,
-    bool Active, DateTimeOffset? LastSeenAt, string Status, GatewayTelemetry Telemetry);
+    bool Active, DateTimeOffset? LastSeenAt, string Status, GatewayTelemetry Telemetry,
+    string? ScopeId = null);
 
 /// <summary>Derives a gateway's liveness label. Liveness is never persisted — it is
 /// computed from the last-seen time against a staleness window at read time.</summary>
@@ -204,8 +207,26 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             .OrderBy(g => g.EnrolledAt)
             .Select(g => new GatewayView(
                 g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
-                GatewayLiveness.Status(g.Active, g.LastSeenAt, now), g.Telemetry))
+                GatewayLiveness.Status(g.Active, g.LastSeenAt, now), g.Telemetry, g.ScopeId))
             .ToList();
+    }
+
+    /// <summary>The scope a gateway is authorized at (null = tenant-wide/root, and
+    /// also when the gateway is not in the tenant — callers fall back to root).</summary>
+    public string? GatewayScope(string tenantId, string gatewayId) =>
+        _gateways.TryGetValue(gatewayId, out var g) && g.TenantId == tenantId ? g.ScopeId : null;
+
+    /// <summary>Pin a gateway to an org scope (null clears it to tenant-wide).
+    /// Returns false if the gateway is not in the tenant.</summary>
+    public bool AssignGatewayScope(string tenantId, string gatewayId, string? scopeId)
+    {
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
+        {
+            return false;
+        }
+        _gateways[gatewayId] = gateway with { ScopeId = scopeId };
+        Audit("gateway.scope_assigned", tenantId, $"{gatewayId} -> {scopeId ?? "(root)"}");
+        return true;
     }
 
     /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>

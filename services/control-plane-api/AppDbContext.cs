@@ -327,6 +327,11 @@ public sealed class GatewayEntity
     public string Name { get; set; } = "";
     public DateTimeOffset EnrolledAt { get; set; }
 
+    /// <summary>The org scope (site/lab/department) this gateway sits in, for
+    /// scope-aware authorization (P3). Null means tenant-wide — authorized at the
+    /// tenant root, i.e. the pre-P3 behavior.</summary>
+    public string? ScopeId { get; set; }
+
     /// <summary>A decommissioned gateway is inactive and its credential revoked.</summary>
     public bool Active { get; set; } = true;
 

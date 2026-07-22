@@ -189,8 +189,32 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
             .Select(g => new GatewayView(
                 g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
                 GatewayLiveness.Status(g.Active, g.LastSeenAt, now),
-                new GatewayTelemetry(g.CapturedCount, g.PendingCount, g.DeliveredCount, g.DeadCount, g.LastCaptureAt)))
+                new GatewayTelemetry(g.CapturedCount, g.PendingCount, g.DeliveredCount, g.DeadCount, g.LastCaptureAt),
+                g.ScopeId))
             .ToList();
+    }
+
+    public string? GatewayScope(string tenantId, string gatewayId)
+    {
+        using var db = _factory.CreateDbContext();
+        return db.Gateways.AsNoTracking()
+            .Where(g => g.Id == gatewayId && g.TenantId == tenantId)
+            .Select(g => g.ScopeId)
+            .FirstOrDefault();
+    }
+
+    public bool AssignGatewayScope(string tenantId, string gatewayId, string? scopeId)
+    {
+        using var db = _factory.CreateDbContext();
+        var gateway = db.Gateways.FirstOrDefault(g => g.Id == gatewayId && g.TenantId == tenantId);
+        if (gateway is null)
+        {
+            return false;
+        }
+        gateway.ScopeId = scopeId;
+        Audit(db, "gateway.scope_assigned", tenantId, $"{gatewayId} -> {scopeId ?? "(root)"}");
+        db.SaveChanges();
+        return true;
     }
 
     public bool ValidateDeviceCredential(string gatewayId, string credential)
