@@ -51,7 +51,7 @@ thiserror = "2"
 # dependency tree stays within deny.toml's permissive license allowlist (rustls'
 # `ring` carries a non-SPDX license the allowlist rejects). Blocking, no async
 # runtime — matches gatewayd's synchronous style.
-ureq = { version = "2", default-features = false, features = ["native-tls"] }
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 native-tls = "0.2"
 # Internal crates referenced by path for the workspace.
 canonical-model    = { path = "crates/canonical-model" }
