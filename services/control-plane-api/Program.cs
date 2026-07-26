@@ -185,6 +185,10 @@ var scopeService = app.Services.GetRequiredService<ScopeService>();
 var roleGrants = app.Services.GetRequiredService<RoleGrantService>();
 var authzClock = app.Services.GetRequiredService<TimeProvider>();
 
+// Platform (super-admin) authorization — disjoint from tenant authz (P6, ADR §8).
+var platformEngine = app.Services.GetRequiredService<IPlatformAuthorizationEngine>();
+var platformAdmin = app.Services.GetRequiredService<PlatformAdminService>();
+
 bool IsAdmin(HttpRequest req) =>
     !string.IsNullOrEmpty(adminToken) &&
     req.Headers.Authorization.ToString() == $"Bearer {adminToken}";
@@ -648,6 +652,42 @@ app.MapPost("/api/tenants/{tenantId}/approvals/{requestId}/reject",
     return DecideResult(approvals.Reject(tenantId, requestId, approverUserId), Results.NoContent);
 });
 
+// --- P6: platform super-admin ----------------------------------------------
+// Gated by PLATFORM roles (not tenant membership). Grant/revoke platform roles is
+// Root-Owner-only (platform.role.manage); the god-mode token bootstraps the first
+// Root Owner, then Root manages the rest.
+app.MapGet("/api/platform/tenants",
+    (IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantRead) is { } denied) return denied;
+    return Results.Json(store.Tenants());
+});
+
+app.MapGet("/api/platform/role-assignments",
+    (string? userId, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.RoleManage) is { } denied) return denied;
+    return Results.Json(platformAdmin.Assignments(userId));
+});
+
+app.MapPost("/api/platform/role-assignments",
+    (GrantPlatformRoleRequest body, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.RoleManage) is { } denied) return denied;
+    var granterUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var result = platformAdmin.Grant(granterUserId, body.UserId, body.Role, body.ExpiresAt, body.Reason);
+    return result.Outcome == PlatformAdminService.GrantOutcome.Ok
+        ? Results.Created($"/api/platform/role-assignments/{result.Assignment!.Id}", result.Assignment)
+        : Results.BadRequest(new { error = "unknown platform role" });
+});
+
+app.MapDelete("/api/platform/role-assignments/{assignmentId}",
+    (string assignmentId, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.RoleManage) is { } denied) return denied;
+    return platformAdmin.Revoke(assignmentId) ? Results.NoContent() : Results.NotFound();
+});
+
 // --- identity: users + sessions (Phase C1) ---------------------------------
 // Session resolution: `Authorization: Bearer ses_…` (SPA) or the `lc_session`
 // HttpOnly cookie (same-site browser use). Cookie hardening to __Host- prefix +
@@ -747,6 +787,39 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         ? roleGrants.CustomGrantsFor(tenantId)
         : null;
     return (tree, tree.Root.Id, assignments, customGrants);
+}
+
+// Platform (super-admin) authorization gate (P6, program prompt §8). Disjoint from
+// the tenant Forbidden: it consults the caller's PLATFORM role assignments, never
+// tenant membership. The god-mode admin token bypasses (bootstrap/break-glass) — it
+// is retired to break-glass-only in a later slice. Anti-enumeration: a non-platform
+// user gets 401 (indistinguishable from "no such surface"); a platform user whose
+// roles lack the permission (or who needs step-up) gets 403 + reason.
+IResult? PlatformForbidden(HttpRequest req, AuthService auth, PlatformPermissionDefinition permission)
+{
+    if (IsAdmin(req))
+    {
+        return null;
+    }
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    var roles = platformAdmin.RolesFor(current.Value.User.Id);
+    if (roles.Count == 0)
+    {
+        return Results.Unauthorized(); // not a platform user
+    }
+    var decision = platformEngine.Authorize(new PlatformAuthorizationRequest(
+        roles.ToList(), permission.Key,
+        MfaSatisfied: current.Value.MfaSatisfied,
+        FreshAuth: current.Value.FreshAuth));
+    return decision.IsAllowed
+        ? null
+        : Results.Json(
+            new { error = decision.Reason, stepUp = decision.RequiresStepUp },
+            statusCode: StatusCodes.Status403Forbidden);
 }
 
 void SetSessionCookie(HttpResponse res, string token, DateTimeOffset expires) =>
@@ -1138,6 +1211,9 @@ internal sealed record AssignScopeRequest(string? ScopeId);
 
 /// <summary>Open a two-party approval request for an approval-gated permission.</summary>
 internal sealed record CreateApprovalRequest(string? PermissionKey, string? TargetId, string? Note);
+
+/// <summary>Assign a platform (super-admin) role to a user (P6).</summary>
+internal sealed record GrantPlatformRoleRequest(string UserId, string Role, DateTimeOffset? ExpiresAt, string? Reason);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

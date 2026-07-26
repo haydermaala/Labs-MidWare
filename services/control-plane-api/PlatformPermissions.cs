@@ -64,6 +64,12 @@ public static class PlatformPermissions
     public static readonly PlatformPermissionDefinition AuditRead =
         Def("audit", "read", RiskLevel.Low, "Read the platform audit trail / compliance evidence.");
 
+    // ── Platform role administration (Root Owner only) ───────────────────────
+    public static readonly PlatformPermissionDefinition RoleManage =
+        Def("role", "manage", RiskLevel.Critical,
+            "Assign/revoke platform roles (the most privileged operation).",
+            requiresMfa: true, requiresFreshAuth: true);
+
     /// <summary>Every platform permission, in catalog order.</summary>
     public static readonly IReadOnlyList<PlatformPermissionDefinition> All =
     [
@@ -73,6 +79,7 @@ public static class PlatformPermissions
         SupportRequest, SupportApprove,
         FeatureFlagManage, ReleaseManage, JobManage,
         SecurityEventRead, AuditRead,
+        RoleManage,
     ];
 
     private static readonly IReadOnlyDictionary<string, PlatformPermissionDefinition> Index =
