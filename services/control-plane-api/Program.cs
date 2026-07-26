@@ -59,6 +59,10 @@ builder.Services.AddSingleton<IScopedAuthorizationEngine, ScopedAuthorizationEng
 builder.Services.AddSingleton<ScopeService>();
 builder.Services.AddSingleton<RoleGrantService>();
 builder.Services.AddSingleton<ApprovalService>();
+// Platform super-admin (P6): named-role authorization + assignment persistence,
+// disjoint from tenant roles. Endpoints + god-mode-token retirement are the next slice.
+builder.Services.AddSingleton<PlatformAdminService>();
+builder.Services.AddSingleton<IPlatformAuthorizationEngine, PlatformAuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
 // otherwise a deterministic fake for dev/tests and unconfigured environments.

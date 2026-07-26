@@ -35,6 +35,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<CustomRoleEntity> CustomRoles => Set<CustomRoleEntity>();
     public DbSet<RolePermissionEntity> RolePermissions => Set<RolePermissionEntity>();
     public DbSet<ApprovalRequestEntity> ApprovalRequests => Set<ApprovalRequestEntity>();
+    public DbSet<PlatformRoleAssignmentEntity> PlatformRoleAssignments => Set<PlatformRoleAssignmentEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -203,6 +204,15 @@ public sealed class AppDbContext : DbContext
             e.ToTable("approval_requests");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<PlatformRoleAssignmentEntity>(e =>
+        {
+            // A global user's platform (super-admin) role grant (P6). GLOBAL — carries
+            // no TenantId and is never tenant-scoped; protected by platform authz, not RLS.
+            e.ToTable("platform_role_assignments");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.UserId);
         });
     }
 }
@@ -517,4 +527,20 @@ public static class ApprovalStatus
     public const string Pending = "pending";
     public const string Approved = "approved";
     public const string Rejected = "rejected";
+}
+
+/// <summary>A global user's grant of a platform (super-admin) role (P6). GLOBAL, not
+/// tenant-scoped — a platform role is distinct from a tenant membership and is never
+/// inferred from one. <see cref="ExpiresAt"/> supports time-limited grants;
+/// <see cref="Reason"/> records the justification (required for break-glass).</summary>
+public sealed class PlatformRoleAssignmentEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string GrantedByUserId { get; set; } = "";
+    public string? Reason { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
 }

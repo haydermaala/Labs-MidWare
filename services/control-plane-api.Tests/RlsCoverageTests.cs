@@ -28,6 +28,9 @@ public sealed class RlsCoverageTests
         // authoritative; the table is global, carries no TenantId, reconciled at
         // startup. Never tenant-scoped.
         "permission_definitions",
+        // Platform (super-admin) role assignments (P6) — global, disjoint from tenant
+        // membership, protected by platform authz not RLS. Never tenant-scoped.
+        "platform_role_assignments",
     };
 
     // Tenant-owned tables that carry no TenantId column and are covered by a
