@@ -245,6 +245,29 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Tenant_Export_Is_Gated_And_Returns_The_Tenant_Data()
+    {
+        var tenant = await NewTenant("Export Endpoint Co");
+
+        // Non-platform caller → 401.
+        var (_, strangerSession) = await NewUser("plat-export-none@example.test");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await Session(strangerSession).GetAsync($"/api/platform/tenants/{tenant}/export")).StatusCode);
+
+        // The god-mode token can export; the artifact carries the tenant record.
+        var res = await Admin().GetAsync($"/api/platform/tenants/{tenant}/export");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var export = (await res.Content.ReadFromJsonAsync<ExportEnvelope>())!;
+        Assert.Equal(tenant, export.Tenant.Id);
+
+        // Unknown tenant → 404.
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await Admin().GetAsync("/api/platform/tenants/ten_ghost/export")).StatusCode);
+    }
+
+    private sealed record ExportEnvelope(TenantDto Tenant);
+
+    [Fact]
     public async Task Legal_Hold_Is_Gated_And_Toggles()
     {
         var tenant = await NewTenant("Hold Endpoint Co");

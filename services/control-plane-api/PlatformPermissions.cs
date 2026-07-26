@@ -34,6 +34,9 @@ public static class PlatformPermissions
     public static readonly PlatformPermissionDefinition TenantOffboard =
         Def("tenant", "offboard", RiskLevel.Critical,
             "Offboard/delete a tenant (irreversible; two-party approval).", requiresMfa: true, requiresFreshAuth: true);
+    public static readonly PlatformPermissionDefinition TenantExport =
+        Def("tenant", "export", RiskLevel.High,
+            "Export a tenant's control-plane data (fleet, config, audit) as an artifact.", requiresFreshAuth: true);
 
     // ── Subscription (billing) ───────────────────────────────────────────────
     public static readonly PlatformPermissionDefinition SubscriptionManage =
@@ -73,7 +76,7 @@ public static class PlatformPermissions
     /// <summary>Every platform permission, in catalog order.</summary>
     public static readonly IReadOnlyList<PlatformPermissionDefinition> All =
     [
-        TenantRead, TenantProvision, TenantSuspend, TenantOffboard,
+        TenantRead, TenantProvision, TenantSuspend, TenantOffboard, TenantExport,
         SubscriptionManage,
         UserRead,
         SupportRequest, SupportApprove,

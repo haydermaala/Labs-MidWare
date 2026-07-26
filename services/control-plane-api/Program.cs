@@ -905,6 +905,22 @@ app.MapPost("/api/platform/tenants/{tenantId}/legal-hold",
     return Results.NoContent();
 });
 
+// Export a tenant's control-plane data as an artifact (§10.3 export step). Records the
+// export in the platform audit trail (who exported which tenant, when).
+app.MapGet("/api/platform/tenants/{tenantId}/export",
+    (string tenantId, IControlPlaneStore store, AuthService auth, TimeProvider clock, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantExport) is { } denied) return denied;
+    var export = TenantExporter.Build(store, clock.GetUtcNow(), tenantId);
+    if (export is null)
+    {
+        return Results.NotFound();
+    }
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    platformAudit.Record("platform.tenant.exported", actorUserId, tenantId);
+    return Results.Json(export);
+});
+
 // Cancel offboarding during cooling-off, returning the tenant to active.
 app.MapPost("/api/platform/tenants/{tenantId}/cancel-offboarding",
     (string tenantId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>

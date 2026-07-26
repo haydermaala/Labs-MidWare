@@ -44,12 +44,15 @@ public static class PlatformRolePermissions
             [PlatformRoles.OperationsAdmin] = Set(
                 PlatformPermissions.TenantRead, PlatformPermissions.TenantProvision,
                 PlatformPermissions.TenantSuspend, PlatformPermissions.TenantOffboard,
+                PlatformPermissions.TenantExport,
                 PlatformPermissions.ReleaseManage, PlatformPermissions.JobManage,
                 PlatformPermissions.FeatureFlagManage),
 
-            // Support: request time-limited grants; read the tenant registry. No standing data.
+            // Support: request time-limited grants; read the tenant registry; export a
+            // tenant's data (e.g. to hand back on offboarding). No standing data access.
             [PlatformRoles.SupportEngineer] = Set(
-                PlatformPermissions.TenantRead, PlatformPermissions.SupportRequest),
+                PlatformPermissions.TenantRead, PlatformPermissions.SupportRequest,
+                PlatformPermissions.TenantExport),
 
             // Billing: subscriptions/plans + registry context. No clinical, no lifecycle.
             [PlatformRoles.BillingAdmin] = Set(

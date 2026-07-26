@@ -7,7 +7,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  approveOffboard, approveSupportGrant, archiveTenant, cancelTenantOffboarding, grantPlatformRole,
+  approveOffboard, approveSupportGrant, archiveTenant, cancelTenantOffboarding, exportTenant, grantPlatformRole,
   listOffboardRequests, listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents,
   listSupportGrants, provisionTenant, reactivatePlatformTenant, rejectOffboard, rejectSupportGrant,
   requestOffboard, requestSupportGrant, revokePlatformRole, setTenantLegalHold,
@@ -161,6 +161,19 @@ export function PlatformPage(): JSX.Element {
           onArchive={(id) => run(`archive-${id}`, () => archiveTenant(opts(token!), id))}
           onCancelOffboard={(id) => run(`cancel-off-${id}`, () => cancelTenantOffboarding(opts(token!), id))}
           onSetLegalHold={(id, hold) => run(`hold-${id}`, () => setTenantLegalHold(opts(token!), id, hold))}
+          onExport={(id) => run(`export-${id}`, async () => {
+            const data = await exportTenant(opts(token!), id);
+            // Trigger a client-side download of the artifact.
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `tenant-${id}-export.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+          })}
         />
 
         {canManageSubscription && (
@@ -257,7 +270,7 @@ function TenantSelect({ id, tenants, value, onChange }: {
   );
 }
 
-function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, onSuspend, onReactivate, onArchive, onCancelOffboard, onSetLegalHold }: {
+function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, onSuspend, onReactivate, onArchive, onCancelOffboard, onSetLegalHold, onExport }: {
   readonly tenants: readonly Tenant[];
   readonly canManage: boolean;
   readonly canOffboard: boolean;
@@ -268,6 +281,7 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
   readonly onArchive: (id: string) => Promise<void>;
   readonly onCancelOffboard: (id: string) => Promise<void>;
   readonly onSetLegalHold: (id: string, hold: boolean) => Promise<void>;
+  readonly onExport: (id: string) => Promise<void>;
 }): JSX.Element {
   const [name, setName] = useState('');
 
@@ -332,6 +346,9 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
                   <td style={{ ...td, whiteSpace: 'nowrap' }} className="lc-tabular">{fmtDate(t.createdAt)}</td>
                   {canManage && (
                     <td style={{ ...td, textAlign: 'right' }}>
+                      <span style={{ display: 'inline-flex', gap: space[2], alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+                      <Button variant="secondary" loading={busy === `export-${t.id}`}
+                        onClick={() => void onExport(t.id)}>Export</Button>
                       {status === 'archived' ? (
                         <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>terminal</span>
                       ) : status === 'offboarding' ? (
@@ -357,6 +374,7 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
                         <Button variant="secondary" loading={busy === `react-${t.id}`}
                           onClick={() => void onReactivate(t.id)}>Reactivate</Button>
                       )}
+                      </span>
                     </td>
                   )}
                 </tr>

@@ -142,6 +142,20 @@ export async function setTenantLegalHold(opts: ControlPlaneOptions, tenantId: st
   await req(opts, 'POST', `/api/platform/tenants/${enc(tenantId)}/legal-hold`, { hold });
 }
 
+/** A tenant's exported control-plane data (§10.3). Shape mirrors the server's TenantExport. */
+export interface TenantExportArtifact {
+  readonly tenant: Tenant;
+  readonly gateways: readonly unknown[];
+  readonly configs: readonly unknown[];
+  readonly audit: readonly unknown[];
+  readonly exportedAt: string;
+}
+
+/** Export a tenant's control-plane data (fleet, config, audit) as an artifact. */
+export function exportTenant(opts: ControlPlaneOptions, tenantId: string): Promise<TenantExportArtifact> {
+  return reqJson<TenantExportArtifact>(opts, 'GET', `/api/platform/tenants/${enc(tenantId)}/export`);
+}
+
 export function setTenantSubscription(
   opts: ControlPlaneOptions,
   tenantId: string,
