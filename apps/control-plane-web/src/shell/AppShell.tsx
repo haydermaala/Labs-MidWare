@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { color, fontSize, space } from '@lab-connect/ui';
 import { useAuth } from '../auth/AuthProvider';
+import { usePlatformRoles } from '../platform/usePlatformRoles';
 import { TenantSwitcher } from './TenantSwitcher';
 
 // Lucide 24×24 outlines — one icon system across the product.
@@ -21,6 +22,7 @@ const ICONS = {
   settings: 'M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
   menu: 'M4 6h16M4 12h16M4 18h16',
   billing: 'M2 7h20M2 7v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7M2 7l2-3h16l2 3M6 15h4',
+  platform: 'M3 21h18M5 21V10M19 21V10M9 21v-6h6v6M4 10l8-6 8 6',
 } as const;
 
 function Icon({ path }: { readonly path: string }): JSX.Element {
@@ -47,6 +49,13 @@ export function AppShell(): JSX.Element {
   const navigate = useNavigate();
   const location = useLocation();
   const [navOpen, setNavOpen] = useState(false);
+
+  // The platform console is shown only to platform operators (disjoint from tenant
+  // membership), resolved via the whoami capability endpoint.
+  const platform = usePlatformRoles();
+  const navItems = platform.hasAccess
+    ? [...NAV, { to: '/platform', label: 'Platform', icon: ICONS.platform, end: false }]
+    : NAV;
 
   // Navigating on a phone should close the drawer.
   useEffect(() => { setNavOpen(false); }, [location.pathname]);
@@ -103,7 +112,7 @@ export function AppShell(): JSX.Element {
           data-open={navOpen ? 'true' : 'false'}
           className="lc-sidebar"
         >
-          {NAV.map((item) => (
+          {navItems.map((item) => (
             <NavLink
               key={item.to}
               to={item.to}

@@ -111,3 +111,6 @@ export * from './control-plane';
 
 // Identity (auth/session/MFA/membership) client.
 export * from './auth';
+
+// Platform (super-admin) client (P6).
+export * from './platform';

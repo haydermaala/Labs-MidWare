@@ -662,6 +662,24 @@ app.MapPost("/api/tenants/{tenantId}/approvals/{requestId}/reject",
 // Gated by PLATFORM roles (not tenant membership). Grant/revoke platform roles is
 // Root-Owner-only (platform.role.manage); the god-mode token bootstraps the first
 // Root Owner, then Root manages the rest.
+// Capability endpoint (§8): the caller's OWN platform roles, so the console can
+// decide whether to show the platform surface. Authenticated users only; returns an
+// empty list for a non-platform user (200, not 401 — the client checks the array).
+app.MapGet("/api/platform/whoami",
+    (AuthService auth, HttpRequest req) =>
+{
+    if (IsAdmin(req))
+    {
+        return Results.Json(new { roles = PlatformRoles.All.ToArray() });
+    }
+    var current = CurrentUser(req, auth);
+    if (current is null)
+    {
+        return Results.Unauthorized();
+    }
+    return Results.Json(new { roles = platformAdmin.RolesFor(current.Value.User.Id).ToArray() });
+});
+
 app.MapGet("/api/platform/tenants",
     (IControlPlaneStore store, AuthService auth, HttpRequest req) =>
 {

@@ -20,6 +20,7 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record SupportGrantDto(string Id, string SubjectTenantId, string Status, bool Active);
     private sealed record SecurityEventDto(string Id, DateTimeOffset At, string Kind, string ActorUserId, string Detail);
     private sealed record OffboardDto(string Id, string SubjectTenantId, string Status);
+    private sealed record WhoamiDto(List<string> Roles);
 
     private async Task<string> NewTenant(string name) =>
         (await (await Admin().PostAsJsonAsync("/api/tenants", new { name }))
@@ -217,6 +218,25 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
         // …but cannot approve its own request (dynamic SoD: requester == approver).
         Assert.Equal(HttpStatusCode.Forbidden,
             (await Admin().PostAsync($"/api/platform/offboard-requests/{request.Id}/approve", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Whoami_Reports_The_Callers_Platform_Roles()
+    {
+        var (userId, session) = await NewUser("plat-whoami@example.test");
+        var user = Session(session);
+
+        // No platform role → empty roles (200, not 401 — the console checks the array).
+        var before = await user.GetFromJsonAsync<WhoamiDto>("/api/platform/whoami");
+        Assert.Empty(before!.Roles);
+
+        await GrantPlatformRole(userId, PlatformRoles.Auditor);
+        var after = await user.GetFromJsonAsync<WhoamiDto>("/api/platform/whoami");
+        Assert.Contains(PlatformRoles.Auditor, after!.Roles);
+
+        // Unauthenticated → 401.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await _factory.CreateClient().GetAsync("/api/platform/whoami")).StatusCode);
     }
 
     [Fact]
