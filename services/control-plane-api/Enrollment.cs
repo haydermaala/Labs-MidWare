@@ -147,7 +147,8 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         return true;
     }
 
-    public TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation)
+    public TenantTransitionOutcome TransitionTenant(
+        string tenantId, TenantLifecycleOperation operation, TimeSpan? coolingOff = null)
     {
         if (!_tenants.TryGetValue(tenantId, out var tenant))
         {
@@ -175,7 +176,7 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             Status = to.ToString(),
             Active = TenantLifecycle.AllowsOperation(to),
             Offboarded = to == TenantStatus.Archived,
-            CoolingOffUntil = to == TenantStatus.Offboarding ? now + OffboardingPolicy.CoolingOff : null,
+            CoolingOffUntil = to == TenantStatus.Offboarding ? now + (coolingOff ?? OffboardingPolicy.CoolingOff) : null,
         };
         Audit(TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
         // Integration shutdown on archival (§10.3): decommission the fleet, revoke every

@@ -19,7 +19,7 @@ namespace ControlPlane.Api;
 /// <summary>A plan's entitlement definition. Quotas/features are provisional
 /// defaults, tunable via configuration; they are the enforcement contract, not
 /// published pricing.</summary>
-public sealed record Plan(string Id, string Name, int GatewayQuota, IReadOnlySet<string> Features)
+public sealed record Plan(string Id, string Name, int GatewayQuota, IReadOnlySet<string> Features, int RetentionDays)
 {
     /// <summary>Whether a gateway count is within this plan's quota (-1 = unlimited).</summary>
     public bool AllowsGatewayCount(int count) => GatewayQuota < 0 || count < GatewayQuota;
@@ -48,12 +48,12 @@ public static class Plans
 
     private static readonly Dictionary<string, Plan> Catalog = new(StringComparer.Ordinal)
     {
-        [Trial] = new(Trial, "Trial", GatewayQuota: 2, Features: Set()),
-        [Pilot] = new(Pilot, "Pilot", GatewayQuota: 5, Features: Set(PlanFeatures.CustomRoles)),
+        [Trial] = new(Trial, "Trial", GatewayQuota: 2, Features: Set(), RetentionDays: 30),
+        [Pilot] = new(Pilot, "Pilot", GatewayQuota: 5, Features: Set(PlanFeatures.CustomRoles), RetentionDays: 30),
         [Laboratory] = new(Laboratory, "Laboratory", GatewayQuota: 25,
-            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.CustomRoles)),
+            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.CustomRoles), RetentionDays: 90),
         [Network] = new(Network, "Network", GatewayQuota: -1,
-            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.Sso, PlanFeatures.CustomRoles)),
+            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.Sso, PlanFeatures.CustomRoles), RetentionDays: 180),
     };
 
     private static HashSet<string> Set(params string[] features) =>
@@ -89,7 +89,8 @@ public sealed record Entitlements(
     int GatewayQuota,
     IReadOnlyCollection<string> Features,
     DateTimeOffset? CurrentPeriodEnd,
-    bool CancelAtPeriodEnd);
+    bool CancelAtPeriodEnd,
+    int RetentionDays);
 
 /// <summary>Public view of a tenant's subscription (no provider secrets).</summary>
 public sealed record SubscriptionView(
@@ -130,8 +131,14 @@ public sealed class BillingService
             plan.Id, plan.Name,
             sub?.Status ?? SubscriptionStatus.Trialing,
             plan.GatewayQuota, plan.Features.ToList(),
-            sub?.CurrentPeriodEnd, sub?.CancelAtPeriodEnd ?? false);
+            sub?.CurrentPeriodEnd, sub?.CancelAtPeriodEnd ?? false,
+            plan.RetentionDays);
     }
+
+    /// <summary>The tenant's data-retention / offboarding cooling-off window from its
+    /// plan (prompt §12 retention_days). Drives how long archiving is deferred.</summary>
+    public TimeSpan RetentionWindowFor(string tenantId) =>
+        TimeSpan.FromDays(EntitlementsFor(tenantId).RetentionDays);
 
     /// <summary>The tenant's provider customer id, if it has one (needed to open
     /// the provider's billing portal). Never surfaced to clients.</summary>

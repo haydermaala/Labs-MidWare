@@ -834,7 +834,7 @@ app.MapGet("/api/platform/offboard-requests",
 });
 
 app.MapPost("/api/platform/offboard-requests/{requestId}/approve",
-    (string requestId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+    (string requestId, IControlPlaneStore store, BillingService billing, AuthService auth, HttpRequest req) =>
 {
     if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
     var approverUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
@@ -843,8 +843,10 @@ app.MapPost("/api/platform/offboard-requests/{requestId}/approve",
     {
         // Approval BEGINS the offboarding pipeline (active → offboarding): it is now
         // cancellable during cooling-off and completed by a separate archive step,
-        // rather than jumping straight to the terminal archived state.
-        store.TransitionTenant(subjectTenantId!, TenantLifecycleOperation.BeginOffboarding);
+        // rather than jumping straight to the terminal archived state. The cooling-off
+        // window is the tenant's plan retention entitlement (§12 retention_days).
+        store.TransitionTenant(subjectTenantId!, TenantLifecycleOperation.BeginOffboarding,
+            billing.RetentionWindowFor(subjectTenantId!));
         platformAudit.Record("platform.tenant.offboarding_started", approverUserId, subjectTenantId!);
         return Results.NoContent();
     }

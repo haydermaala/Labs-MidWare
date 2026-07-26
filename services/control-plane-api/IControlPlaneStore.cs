@@ -39,8 +39,11 @@ public interface IControlPlaneStore
     /// state machine: begin/cancel/complete offboarding and any other named operation. The
     /// tenant's Status and the derived Active/Offboarded mirrors are updated together.
     /// Returns <see cref="TenantTransitionOutcome.InvalidTransition"/> if the operation is
-    /// not legal from the tenant's current state, or NotFound if the tenant is unknown.</summary>
-    TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation);
+    /// not legal from the tenant's current state, or NotFound if the tenant is unknown.
+    /// <paramref name="coolingOff"/> sets the offboarding cooling-off window when beginning
+    /// offboarding (from the tenant's retention entitlement); null uses the policy default.</summary>
+    TenantTransitionOutcome TransitionTenant(
+        string tenantId, TenantLifecycleOperation operation, TimeSpan? coolingOff = null);
 
     /// <summary>Place or lift a legal hold on a tenant (P7, §10.3). While held, archiving
     /// is refused regardless of cooling-off. Returns false if the tenant is unknown.</summary>

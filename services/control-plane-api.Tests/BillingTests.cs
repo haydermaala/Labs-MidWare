@@ -12,6 +12,14 @@ public sealed class BillingTests : IClassFixture<AuthApiFactory>
 
     public BillingTests(AuthApiFactory factory) => _factory = factory;
 
+    [Theory]
+    [InlineData("trial", 30)]
+    [InlineData("pilot", 30)]
+    [InlineData("laboratory", 90)]
+    [InlineData("network", 180)]
+    public void Plans_Carry_A_Retention_Window(string planId, int expectedDays) =>
+        Assert.Equal(expectedDays, Plans.Resolve(planId).RetentionDays);
+
     private sealed record TenantDto(string Id);
     private sealed record UserDto(string Id);
     private sealed record LoginDto(string SessionToken);

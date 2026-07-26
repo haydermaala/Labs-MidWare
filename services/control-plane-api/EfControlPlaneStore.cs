@@ -127,7 +127,8 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return true;
     }
 
-    public TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation)
+    public TenantTransitionOutcome TransitionTenant(
+        string tenantId, TenantLifecycleOperation operation, TimeSpan? coolingOff = null)
     {
         using var db = _factory.CreateDbContext();
         using var scope = TenantScope.Begin(db, tenantId);
@@ -162,7 +163,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         // Maintain the offboarding window: opened on begin, cleared when the tenant
         // leaves the pipeline (cancel → active, or archive → terminal).
         tenant.OffboardingStartedAt = to == TenantStatus.Offboarding ? now : null;
-        tenant.CoolingOffUntil = to == TenantStatus.Offboarding ? now + OffboardingPolicy.CoolingOff : null;
+        tenant.CoolingOffUntil = to == TenantStatus.Offboarding ? now + (coolingOff ?? OffboardingPolicy.CoolingOff) : null;
         Audit(db, TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
         // Completing archival runs the integration shutdown (§10.3): decommission the
         // fleet and revoke every device credential so nothing can authenticate again,

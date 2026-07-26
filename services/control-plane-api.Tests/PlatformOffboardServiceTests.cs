@@ -119,4 +119,26 @@ public sealed class PlatformOffboardServiceTests
         Assert.Equal(nameof(TenantStatus.Archived), archived.Status);
         Assert.Null(archived.CoolingOffUntil);
     }
+
+    [Fact]
+    public void Cooling_Off_Window_Follows_The_Provided_Retention()
+    {
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero));
+        var store = new InMemoryControlPlaneStore(clock);
+        var t = store.CreateTenant("Retention Co");
+        var window = TimeSpan.FromDays(90); // a longer plan's retention entitlement
+
+        store.TransitionTenant(t.Id, TenantLifecycleOperation.BeginOffboarding, window);
+        Assert.Equal(clock.GetUtcNow() + window, store.FindTenant(t.Id)!.CoolingOffUntil);
+
+        // 60 days in (< 90) → archive still blocked.
+        clock.Advance(TimeSpan.FromDays(60));
+        Assert.Equal(TenantTransitionOutcome.CoolingOff,
+            store.TransitionTenant(t.Id, TenantLifecycleOperation.Archive));
+
+        // Past the 90-day window → archive allowed.
+        clock.Advance(TimeSpan.FromDays(31));
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(t.Id, TenantLifecycleOperation.Archive));
+    }
 }
