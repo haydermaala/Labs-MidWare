@@ -178,6 +178,28 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             CoolingOffUntil = to == TenantStatus.Offboarding ? now + OffboardingPolicy.CoolingOff : null,
         };
         Audit(TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
+        // Integration shutdown on archival (§10.3): decommission the fleet, revoke every
+        // device credential, and write a completion certificate.
+        if (to == TenantStatus.Archived)
+        {
+            var gatewayIds = _gateways.Values.Where(g => g.TenantId == tenantId).Select(g => g.Id).ToList();
+            var decommissioned = 0;
+            var revoked = 0;
+            foreach (var id in gatewayIds)
+            {
+                if (_gateways.TryGetValue(id, out var g) && g.Active)
+                {
+                    _gateways[id] = g with { Active = false };
+                    decommissioned++;
+                }
+                if (_deviceCredentials.TryRemove(id, out _))
+                {
+                    revoked++;
+                }
+            }
+            Audit("tenant.archive_completed", tenantId,
+                $"gateways_decommissioned={decommissioned};credentials_revoked={revoked}");
+        }
         return TenantTransitionOutcome.Ok;
     }
 

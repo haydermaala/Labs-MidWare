@@ -164,6 +164,23 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         tenant.OffboardingStartedAt = to == TenantStatus.Offboarding ? now : null;
         tenant.CoolingOffUntil = to == TenantStatus.Offboarding ? now + OffboardingPolicy.CoolingOff : null;
         Audit(db, TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
+        // Completing archival runs the integration shutdown (§10.3): decommission the
+        // fleet and revoke every device credential so nothing can authenticate again,
+        // and write a completion certificate (an immutable audit record) of what ran.
+        if (to == TenantStatus.Archived)
+        {
+            var gateways = db.Gateways.Where(g => g.TenantId == tenantId).ToList();
+            var decommissioned = 0;
+            foreach (var gateway in gateways.Where(g => g.Active))
+            {
+                gateway.Active = false;
+                decommissioned++;
+            }
+            var credentials = db.DeviceCredentials.Where(c => c.TenantId == tenantId).ToList();
+            db.DeviceCredentials.RemoveRange(credentials);
+            Audit(db, "tenant.archive_completed", tenantId,
+                $"gateways_decommissioned={decommissioned};credentials_revoked={credentials.Count}");
+        }
         db.SaveChanges();
         scope.Complete();
         return TenantTransitionOutcome.Ok;

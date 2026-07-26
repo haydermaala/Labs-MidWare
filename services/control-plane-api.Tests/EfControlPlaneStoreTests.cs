@@ -249,6 +249,31 @@ public sealed class EfControlPlaneStoreTests
         store.GatewaysFor(tenantId).Single(g => g.Id == gatewayId);
 
     [Fact]
+    public void Archiving_A_Tenant_Decommissions_The_Fleet_And_Revokes_Credentials()
+    {
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 7, 19, 12, 0, 0, TimeSpan.Zero));
+        var store = NewStore(clock);
+        var tenant = store.CreateTenant("Wind-down Co");
+        var token = store.IssueBootstrapToken(tenant.Id, TimeSpan.FromMinutes(15));
+        var gw = store.Enroll(token!.Token, "edge-1")!;
+
+        // The credential authenticates before archival.
+        Assert.Equal(tenant.Id, store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+
+        // Run the offboarding pipeline to completion (past the cooling-off window).
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(tenant.Id, TenantLifecycleOperation.BeginOffboarding));
+        clock.Advance(OffboardingPolicy.CoolingOff + TimeSpan.FromMinutes(1));
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(tenant.Id, TenantLifecycleOperation.Archive));
+
+        // Integration shutdown (§10.3): the credential no longer authenticates and the
+        // gateway is decommissioned.
+        Assert.Null(store.ValidateDeviceCredential(gw.GatewayId, gw.DeviceCredential));
+        Assert.Equal("decommissioned", store.GatewaysFor(tenant.Id).Single(g => g.Id == gw.GatewayId).Status);
+    }
+
+    [Fact]
     public void Heartbeat_Sets_LastSeen_And_Marks_Online()
     {
         var (store, _, tenantId, gatewayId) = EnrolledWithClock();
