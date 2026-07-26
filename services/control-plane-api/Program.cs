@@ -63,6 +63,7 @@ builder.Services.AddSingleton<ApprovalService>();
 // disjoint from tenant roles. Endpoints + god-mode-token retirement are the next slice.
 builder.Services.AddSingleton<PlatformAdminService>();
 builder.Services.AddSingleton<PlatformSupportService>();
+builder.Services.AddSingleton<PlatformAuditService>();
 builder.Services.AddSingleton<IPlatformAuthorizationEngine, PlatformAuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
@@ -190,6 +191,7 @@ var authzClock = app.Services.GetRequiredService<TimeProvider>();
 var platformEngine = app.Services.GetRequiredService<IPlatformAuthorizationEngine>();
 var platformAdmin = app.Services.GetRequiredService<PlatformAdminService>();
 var platformSupport = app.Services.GetRequiredService<PlatformSupportService>();
+var platformAudit = app.Services.GetRequiredService<PlatformAuditService>();
 
 bool IsAdmin(HttpRequest req) =>
     !string.IsNullOrEmpty(adminToken) &&
@@ -678,9 +680,12 @@ app.MapPost("/api/platform/role-assignments",
     if (PlatformForbidden(req, auth, PlatformPermissions.RoleManage) is { } denied) return denied;
     var granterUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
     var result = platformAdmin.Grant(granterUserId, body.UserId, body.Role, body.ExpiresAt, body.Reason);
-    return result.Outcome == PlatformAdminService.GrantOutcome.Ok
-        ? Results.Created($"/api/platform/role-assignments/{result.Assignment!.Id}", result.Assignment)
-        : Results.BadRequest(new { error = "unknown platform role" });
+    if (result.Outcome != PlatformAdminService.GrantOutcome.Ok)
+    {
+        return Results.BadRequest(new { error = "unknown platform role" });
+    }
+    platformAudit.Record("platform.role.granted", granterUserId, $"{body.Role} -> {body.UserId}");
+    return Results.Created($"/api/platform/role-assignments/{result.Assignment!.Id}", result.Assignment);
 });
 
 app.MapDelete("/api/platform/role-assignments/{assignmentId}",
@@ -764,7 +769,12 @@ app.MapPost("/api/platform/support-grants/{grantId}/approve",
 {
     if (PlatformForbidden(req, auth, PlatformPermissions.SupportApprove) is { } denied) return denied;
     var approverUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
-    return SupportDecideResult(platformSupport.Approve(grantId, approverUserId));
+    var outcome = platformSupport.Approve(grantId, approverUserId);
+    if (outcome == PlatformSupportService.DecideOutcome.Ok)
+    {
+        platformAudit.Record("platform.support.approved", approverUserId, grantId);
+    }
+    return SupportDecideResult(outcome);
 });
 
 app.MapPost("/api/platform/support-grants/{grantId}/reject",
@@ -773,6 +783,14 @@ app.MapPost("/api/platform/support-grants/{grantId}/reject",
     if (PlatformForbidden(req, auth, PlatformPermissions.SupportApprove) is { } denied) return denied;
     var deciderUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
     return SupportDecideResult(platformSupport.Reject(grantId, deciderUserId));
+});
+
+// Platform security/audit event log (Security + Auditor review).
+app.MapGet("/api/platform/security-events",
+    (int? limit, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.SecurityEventRead) is { } denied) return denied;
+    return Results.Json(platformAudit.Recent(limit ?? 100));
 });
 
 // --- identity: users + sessions (Phase C1) ---------------------------------

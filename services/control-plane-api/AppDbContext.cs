@@ -37,6 +37,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<ApprovalRequestEntity> ApprovalRequests => Set<ApprovalRequestEntity>();
     public DbSet<PlatformRoleAssignmentEntity> PlatformRoleAssignments => Set<PlatformRoleAssignmentEntity>();
     public DbSet<PlatformSupportGrantEntity> PlatformSupportGrants => Set<PlatformSupportGrantEntity>();
+    public DbSet<PlatformSecurityEventEntity> PlatformSecurityEvents => Set<PlatformSecurityEventEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -224,6 +225,14 @@ public sealed class AppDbContext : DbContext
             e.ToTable("platform_support_access_grants");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.SubjectTenantId);
+        });
+
+        modelBuilder.Entity<PlatformSecurityEventEntity>(e =>
+        {
+            // Append-only platform security/audit events (P6, §8). GLOBAL/platform.
+            e.ToTable("platform_security_events");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.At);
         });
     }
 }
@@ -581,4 +590,16 @@ public static class SupportGrantStatus
     public const string Pending = "pending";
     public const string Approved = "approved";
     public const string Rejected = "rejected";
+}
+
+/// <summary>An append-only platform security/audit event (P6, §8): a record of a
+/// privileged platform operation (role grants, tenant lifecycle, support approvals).
+/// GLOBAL/platform — string PK (no sequence) and no TenantId.</summary>
+public sealed class PlatformSecurityEventEntity
+{
+    public string Id { get; set; } = "";
+    public DateTimeOffset At { get; set; }
+    public string Kind { get; set; } = "";
+    public string ActorUserId { get; set; } = "";
+    public string Detail { get; set; } = "";
 }

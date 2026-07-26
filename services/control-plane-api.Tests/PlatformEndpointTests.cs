@@ -18,6 +18,7 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record LoginDto(string SessionToken, UserDto User);
     private sealed record AssignmentDto(string Id, string UserId, string Role, bool Active);
     private sealed record SupportGrantDto(string Id, string SubjectTenantId, string Status, bool Active);
+    private sealed record SecurityEventDto(string Id, DateTimeOffset At, string Kind, string ActorUserId, string Detail);
 
     private async Task<string> NewTenant(string name) =>
         (await (await Admin().PostAsJsonAsync("/api/tenants", new { name }))
@@ -169,6 +170,26 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
 
         Assert.Equal(HttpStatusCode.Forbidden,
             (await user.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Privileged_Platform_Operations_Emit_Security_Events()
+    {
+        // A granted platform role is itself a security event; a Security admin (which
+        // holds platform.security_event.read) can review the log.
+        var (secId, secSession) = await NewUser("plat-sec-audit@example.test");
+        await GrantPlatformRole(secId, PlatformRoles.SecurityAdmin);
+        var security = Session(secSession);
+
+        var events = await security.GetFromJsonAsync<List<SecurityEventDto>>("/api/platform/security-events");
+        // The grant that provisioned this very Security admin was recorded.
+        Assert.Contains(events!, e => e.Kind == "platform.role.granted" && e.Detail.Contains(secId));
+
+        // An Auditor also holds security_event.read; a role with neither is denied.
+        var (opsId, opsSession) = await NewUser("plat-ops-audit@example.test");
+        await GrantPlatformRole(opsId, PlatformRoles.ReleaseManager); // no security_event.read
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Session(opsSession).GetAsync("/api/platform/security-events")).StatusCode);
     }
 
     [Fact]

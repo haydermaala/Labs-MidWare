@@ -34,6 +34,8 @@ public sealed class RlsCoverageTests
         // Platform support-access grants (P6) — global platform artifacts (tenant ref
         // is SubjectTenantId, not TenantId); gated by platform authz, not RLS.
         "platform_support_access_grants",
+        // Platform security/audit events (P6) — append-only global platform log.
+        "platform_security_events",
     };
 
     // Tenant-owned tables that carry no TenantId column and are covered by a
