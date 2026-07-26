@@ -86,6 +86,35 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Ops_Manages_Tenant_Lifecycle_And_Billing_Manages_Subscriptions()
+    {
+        // Operations Admin: provision + suspend/reactivate, but NOT subscriptions.
+        var (opsId, opsSession) = await NewUser("plat-ops@example.test");
+        await Admin().PostAsJsonAsync("/api/platform/role-assignments",
+            new { userId = opsId, role = PlatformRoles.OperationsAdmin });
+        var ops = Session(opsSession);
+
+        var tenant = (await (await ops.PostAsJsonAsync("/api/platform/tenants", new { name = "Provisioned Co" }))
+            .Content.ReadFromJsonAsync<TenantDto>())!;
+        Assert.False(string.IsNullOrEmpty(tenant.Id));
+        Assert.Equal(HttpStatusCode.NoContent, (await ops.PostAsync($"/api/platform/tenants/{tenant.Id}/suspend", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await ops.PostAsync($"/api/platform/tenants/{tenant.Id}/reactivate", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await ops.PostAsJsonAsync(
+            $"/api/platform/tenants/{tenant.Id}/subscription", new { planId = "laboratory" })).StatusCode);
+
+        // Billing Admin: set the plan, but NOT provision.
+        var (billId, billSession) = await NewUser("plat-bill@example.test");
+        await Admin().PostAsJsonAsync("/api/platform/role-assignments",
+            new { userId = billId, role = PlatformRoles.BillingAdmin });
+        var bill = Session(billSession);
+
+        Assert.Equal(HttpStatusCode.OK, (await bill.PostAsJsonAsync(
+            $"/api/platform/tenants/{tenant.Id}/subscription", new { planId = "laboratory" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await bill.PostAsJsonAsync(
+            "/api/platform/tenants", new { name = "Nope" })).StatusCode);
+    }
+
+    [Fact]
     public async Task Unknown_Platform_Role_Is_Rejected()
     {
         var (userId, _) = await NewUser("plat-bad@example.test");

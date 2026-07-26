@@ -688,6 +688,42 @@ app.MapDelete("/api/platform/role-assignments/{assignmentId}",
     return platformAdmin.Revoke(assignmentId) ? Results.NoContent() : Results.NotFound();
 });
 
+// Platform tenant lifecycle (Operations) — provision, suspend, reactivate.
+app.MapPost("/api/platform/tenants",
+    (PlatformProvisionTenantRequest body, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantProvision) is { } denied) return denied;
+    if (string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest(new { error = "a tenant name is required" });
+    var tenant = store.CreateTenant(body.Name);
+    return Results.Created($"/api/platform/tenants/{tenant.Id}", tenant);
+});
+
+app.MapPost("/api/platform/tenants/{tenantId}/suspend",
+    (string tenantId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantSuspend) is { } denied) return denied;
+    return store.DeactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
+});
+
+app.MapPost("/api/platform/tenants/{tenantId}/reactivate",
+    (string tenantId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantSuspend) is { } denied) return denied;
+    return store.ReactivateTenant(tenantId) ? Results.NoContent() : Results.NotFound();
+});
+
+// Platform subscription management (Billing) — set a tenant's plan cross-tenant.
+app.MapPost("/api/platform/tenants/{tenantId}/subscription",
+    (string tenantId, SetSubscriptionRequest body, IControlPlaneStore store, BillingService billing, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.SubscriptionManage) is { } denied) return denied;
+    if (!store.TenantExists(tenantId)) return Results.NotFound();
+    if (body.PlanId is null || !Plans.IsKnown(body.PlanId)) return Results.BadRequest(new { error = "unknown plan" });
+    billing.UpsertSubscription(tenantId, body.PlanId, body.Status ?? SubscriptionStatus.Active,
+        null, null, authzClock.GetUtcNow().AddDays(30), false);
+    return Results.Json(billing.EntitlementsFor(tenantId));
+});
+
 // --- identity: users + sessions (Phase C1) ---------------------------------
 // Session resolution: `Authorization: Bearer ses_…` (SPA) or the `lc_session`
 // HttpOnly cookie (same-site browser use). Cookie hardening to __Host- prefix +
@@ -1214,6 +1250,12 @@ internal sealed record CreateApprovalRequest(string? PermissionKey, string? Targ
 
 /// <summary>Assign a platform (super-admin) role to a user (P6).</summary>
 internal sealed record GrantPlatformRoleRequest(string UserId, string Role, DateTimeOffset? ExpiresAt, string? Reason);
+
+/// <summary>Provision a new tenant from the platform surface (P6).</summary>
+internal sealed record PlatformProvisionTenantRequest(string Name);
+
+/// <summary>Set a tenant's subscription plan from the platform surface (P6).</summary>
+internal sealed record SetSubscriptionRequest(string? PlanId, string? Status);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);
