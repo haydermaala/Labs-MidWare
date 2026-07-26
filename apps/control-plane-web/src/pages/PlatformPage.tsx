@@ -228,6 +228,12 @@ function StatusChip({ status }: { readonly status: string }): JSX.Element {
   );
 }
 
+/** The lifecycle status shown for a tenant: the authoritative P7 status, falling back
+ *  to the legacy booleans for an older server. Lower-cased for display/color lookup. */
+function statusOf(t: Tenant): string {
+  return (t.status ?? (t.offboarded ? 'archived' : t.active ? 'active' : 'suspended')).toLowerCase();
+}
+
 /** A tenant picker built from the tenant registry, so requesters pick by name not id. */
 function TenantSelect({ id, tenants, value, onChange }: {
   readonly id: string;
@@ -255,11 +261,32 @@ function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onRe
   readonly onReactivate: (id: string) => Promise<void>;
 }): JSX.Element {
   const [name, setName] = useState('');
+
+  // Counts by lifecycle state (prompt §13.1 overview), derived from the same status
+  // the table shows so the summary and rows never disagree.
+  const counts = new Map<string, number>();
+  for (const t of tenants) {
+    const s = statusOf(t);
+    counts.set(s, (counts.get(s) ?? 0) + 1);
+  }
+  const summary = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+
   return (
     <section style={{ display: 'grid', gap: space[3] }}>
       <h2 style={{ fontSize: fontSize.section, fontWeight: 600 }}>
         Tenants <span style={{ color: color.fgMuted, fontWeight: 400 }}>({tenants.length})</span>
       </h2>
+
+      {summary.length > 0 && (
+        <div style={{ display: 'flex', gap: space[2], flexWrap: 'wrap' }}>
+          {summary.map(([s, n]) => (
+            <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: space[2] }}>
+              <StatusChip status={s} />
+              <span style={{ fontSize: fontSize.meta, color: color.fgMuted }} className="lc-tabular">{n}</span>
+            </span>
+          ))}
+        </div>
+      )}
 
       {canManage && (
         <form
@@ -287,9 +314,7 @@ function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onRe
           </thead>
           <tbody>
             {tenants.map((t) => {
-              // Prefer the authoritative lifecycle status (P7); fall back to the legacy
-              // booleans for a client talking to an older server.
-              const status = (t.status ?? (t.offboarded ? 'archived' : t.active ? 'active' : 'suspended')).toLowerCase();
+              const status = statusOf(t);
               const offboarded = status === 'archived' || status === 'offboarding';
               return (
                 <tr key={t.id}>
