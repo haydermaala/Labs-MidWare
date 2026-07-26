@@ -10,7 +10,7 @@ import {
   approveOffboard, approveSupportGrant, grantPlatformRole, listOffboardRequests,
   listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents, listSupportGrants,
   provisionTenant, reactivatePlatformTenant, rejectOffboard, rejectSupportGrant,
-  requestOffboard, requestSupportGrant, revokePlatformRole, suspendTenant,
+  requestOffboard, requestSupportGrant, revokePlatformRole, setTenantSubscription, suspendTenant,
   type ControlPlaneOptions, type PlatformOffboardRequest, type PlatformRoleAssignment,
   type PlatformSecurityEvent, type PlatformSupportGrant, type Tenant,
 } from '@lab-connect/api-client';
@@ -25,6 +25,10 @@ const PLATFORM_ROLES = [
   'platform-root-owner', 'platform-operations-admin', 'platform-support-engineer',
   'platform-billing-admin', 'platform-security-admin', 'platform-auditor', 'platform-release-manager',
 ] as const;
+
+// Billing plan ids (Billing.cs Plans.*). Trial is the no-subscription default; the
+// paid plans unlock features (e.g. custom roles) per the entitlement matrix.
+const PLANS = ['trial', 'pilot', 'laboratory', 'network'] as const;
 
 function opts(token: string): ControlPlaneOptions {
   return { baseUrl: API_BASE, adminToken: token };
@@ -55,6 +59,7 @@ export function PlatformPage(): JSX.Element {
   const canRequestSupport = isRoot || platform.has('platform-support-engineer');
   const canOffboard = isRoot || platform.has('platform-operations-admin');
   const canReadSecurity = isRoot || platform.has('platform-security-admin') || platform.has('platform-auditor');
+  const canManageSubscription = isRoot || platform.has('platform-billing-admin');
 
   const [assignments, setAssignments] = useState<readonly PlatformRoleAssignment[]>([]);
   const [tenants, setTenants] = useState<readonly Tenant[]>([]);
@@ -152,6 +157,16 @@ export function PlatformPage(): JSX.Element {
           onSuspend={(id) => run(`suspend-${id}`, () => suspendTenant(opts(token!), id))}
           onReactivate={(id) => run(`react-${id}`, () => reactivatePlatformTenant(opts(token!), id))}
         />
+
+        {canManageSubscription && (
+          <SubscriptionSection
+            tenants={tenants}
+            busy={busy}
+            onSetPlan={(tenantId, planId) => run('subscription', async () => {
+              await setTenantSubscription(opts(token!), tenantId, planId);
+            })}
+          />
+        )}
 
         {(canRequestSupport || canApproveSupport) && (
           <SupportSection
@@ -299,6 +314,40 @@ function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onRe
           </tbody>
         </table>
       </div>
+    </section>
+  );
+}
+
+function SubscriptionSection({ tenants, busy, onSetPlan }: {
+  readonly tenants: readonly Tenant[];
+  readonly busy: string | null;
+  readonly onSetPlan: (tenantId: string, planId: string) => Promise<void>;
+}): JSX.Element {
+  const [tenantId, setTenantId] = useState('');
+  const [planId, setPlanId] = useState<string>('pilot');
+
+  return (
+    <section style={{ display: 'grid', gap: space[3] }}>
+      <h2 style={{ fontSize: fontSize.section, fontWeight: 600 }}>Subscription</h2>
+      <p style={{ margin: 0, color: color.fgMuted, fontSize: fontSize.body }}>
+        Set a tenant&rsquo;s plan. Paid plans unlock entitlements (e.g. custom roles); this writes the
+        subscription directly, outside the checkout flow.
+      </p>
+
+      <form
+        className="lc-card"
+        style={{ padding: space[4], display: 'flex', gap: space[3], alignItems: 'end', flexWrap: 'wrap' }}
+        onSubmit={(e) => { e.preventDefault(); void onSetPlan(tenantId, planId); }}
+      >
+        <TenantSelect id="subscription-tenant" tenants={tenants} value={tenantId} onChange={setTenantId} />
+        <div className="lc-field" style={{ flex: '0 1 200px' }}>
+          <label className="lc-field__label" htmlFor="subscription-plan">Plan</label>
+          <select id="subscription-plan" className="lc-input" value={planId} onChange={(e) => setPlanId(e.target.value)}>
+            {PLANS.map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+        <Button type="submit" loading={busy === 'subscription'} disabled={tenantId === ''}>Apply plan</Button>
+      </form>
     </section>
   );
 }
