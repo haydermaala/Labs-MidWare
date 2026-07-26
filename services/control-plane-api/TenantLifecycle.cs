@@ -77,6 +77,22 @@ public enum TenantTransitionOutcome
 
     /// <summary>The operation is not legal from the tenant's current state.</summary>
     InvalidTransition,
+
+    /// <summary>Archive refused: the cooling-off window has not yet elapsed.</summary>
+    CoolingOff,
+
+    /// <summary>Archive refused: a legal hold is in place (overrides deletion, prompt §10.3).</summary>
+    LegalHold,
+}
+
+/// <summary>Offboarding retention policy (prompt §10.3): a tenant does not hard-archive
+/// immediately — a cooling-off window must elapse first, during which offboarding can be
+/// cancelled, and a legal hold overrides archiving entirely.</summary>
+public static class OffboardingPolicy
+{
+    /// <summary>Default cooling-off window between beginning offboarding and being allowed
+    /// to archive. Deliberately generous; a real deployment can make this configurable.</summary>
+    public static readonly TimeSpan CoolingOff = TimeSpan.FromDays(30);
 }
 
 /// <summary>The tenant lifecycle: which states may follow which, which states permit

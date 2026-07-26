@@ -1,5 +1,6 @@
 using ControlPlane.Api;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Time.Testing;
 
 namespace ControlPlane.Api.Tests;
 
@@ -51,7 +52,8 @@ public sealed class PlatformOffboardServiceTests
     [Fact]
     public void Offboarding_Is_A_Cancellable_Pipeline_Ending_In_A_Terminal_Archive()
     {
-        var store = new InMemoryControlPlaneStore(TimeProvider.System);
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero));
+        var store = new InMemoryControlPlaneStore(clock);
         var tenant = store.CreateTenant("Terminal Co");
 
         // Approval BEGINS offboarding: the tenant leaves active but is NOT yet terminal.
@@ -69,8 +71,10 @@ public sealed class PlatformOffboardServiceTests
             store.TransitionTenant(tenant.Id, TenantLifecycleOperation.CancelOffboarding));
         Assert.True(store.FindTenant(tenant.Id)!.Active);
 
-        // Re-begin, then complete the pipeline to the terminal archived state.
+        // Re-begin, then complete the pipeline to the terminal archived state — after the
+        // cooling-off window has elapsed (the timed guard is covered on its own below).
         store.TransitionTenant(tenant.Id, TenantLifecycleOperation.BeginOffboarding);
+        clock.Advance(OffboardingPolicy.CoolingOff + TimeSpan.FromMinutes(1));
         Assert.Equal(TenantTransitionOutcome.Ok,
             store.TransitionTenant(tenant.Id, TenantLifecycleOperation.Archive));
         var archived = store.FindTenant(tenant.Id)!;
@@ -84,5 +88,35 @@ public sealed class PlatformOffboardServiceTests
         // Transitioning an unknown tenant is NotFound.
         Assert.Equal(TenantTransitionOutcome.NotFound,
             store.TransitionTenant("ten_ghost", TenantLifecycleOperation.BeginOffboarding));
+    }
+
+    [Fact]
+    public void Archive_Is_Blocked_By_Cooling_Off_And_By_Legal_Hold()
+    {
+        var clock = new FakeTimeProvider(new DateTimeOffset(2026, 7, 26, 12, 0, 0, TimeSpan.Zero));
+        var store = new InMemoryControlPlaneStore(clock);
+        var t = store.CreateTenant("Hold Co");
+
+        store.TransitionTenant(t.Id, TenantLifecycleOperation.BeginOffboarding);
+        // The cooling-off window is open → archiving is refused (§10.3, no immediate hard-delete).
+        Assert.Equal(TenantTransitionOutcome.CoolingOff,
+            store.TransitionTenant(t.Id, TenantLifecycleOperation.Archive));
+        Assert.NotNull(store.FindTenant(t.Id)!.CoolingOffUntil);
+
+        // Advance the clock past the cooling-off window.
+        clock.Advance(OffboardingPolicy.CoolingOff + TimeSpan.FromMinutes(1));
+
+        // A legal hold overrides archiving, even once cooling-off has elapsed.
+        Assert.True(store.SetTenantLegalHold(t.Id, hold: true));
+        Assert.Equal(TenantTransitionOutcome.LegalHold,
+            store.TransitionTenant(t.Id, TenantLifecycleOperation.Archive));
+
+        // Lift the hold → archive now completes to the terminal state.
+        Assert.True(store.SetTenantLegalHold(t.Id, hold: false));
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(t.Id, TenantLifecycleOperation.Archive));
+        var archived = store.FindTenant(t.Id)!;
+        Assert.Equal(nameof(TenantStatus.Archived), archived.Status);
+        Assert.Null(archived.CoolingOffUntil);
     }
 }

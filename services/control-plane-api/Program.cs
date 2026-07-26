@@ -879,9 +879,30 @@ app.MapPost("/api/platform/tenants/{tenantId}/archive",
         platformAudit.Record("platform.tenant.archived", actorUserId, tenantId);
         return Results.NoContent();
     }
-    return outcome == TenantTransitionOutcome.NotFound
-        ? Results.NotFound()
-        : Results.Conflict(new { error = "tenant is not in the offboarding state" });
+    return outcome switch
+    {
+        TenantTransitionOutcome.NotFound => Results.NotFound(),
+        TenantTransitionOutcome.LegalHold => Results.Conflict(
+            new { error = "a legal hold is in place; lift it before archiving" }),
+        TenantTransitionOutcome.CoolingOff => Results.Conflict(
+            new { error = "the cooling-off window has not yet elapsed" }),
+        _ => Results.Conflict(new { error = "tenant is not in the offboarding state" }),
+    };
+});
+
+// Place or lift a legal hold, which overrides archiving/deletion (§10.3).
+app.MapPost("/api/platform/tenants/{tenantId}/legal-hold",
+    (string tenantId, SetLegalHoldRequest body, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    if (!store.SetTenantLegalHold(tenantId, body.Hold))
+    {
+        return Results.NotFound();
+    }
+    platformAudit.Record(body.Hold ? "platform.tenant.legal_hold_placed" : "platform.tenant.legal_hold_lifted",
+        actorUserId, tenantId);
+    return Results.NoContent();
 });
 
 // Cancel offboarding during cooling-off, returning the tenant to active.
@@ -1447,6 +1468,9 @@ internal sealed record RequestSupportGrantRequest(string SubjectTenantId, string
 
 /// <summary>Request the terminal offboarding of a tenant (P6, two-party).</summary>
 internal sealed record RequestOffboardRequest(string SubjectTenantId, string? Reason);
+
+/// <summary>Place or lift a legal hold on a tenant (P7, §10.3).</summary>
+internal sealed record SetLegalHoldRequest(bool Hold);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

@@ -10,7 +10,8 @@ import {
   approveOffboard, approveSupportGrant, archiveTenant, cancelTenantOffboarding, grantPlatformRole,
   listOffboardRequests, listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents,
   listSupportGrants, provisionTenant, reactivatePlatformTenant, rejectOffboard, rejectSupportGrant,
-  requestOffboard, requestSupportGrant, revokePlatformRole, setTenantSubscription, suspendTenant,
+  requestOffboard, requestSupportGrant, revokePlatformRole, setTenantLegalHold,
+  setTenantSubscription, suspendTenant,
   type ControlPlaneOptions, type PlatformOffboardRequest, type PlatformRoleAssignment,
   type PlatformSecurityEvent, type PlatformSupportGrant, type Tenant,
 } from '@lab-connect/api-client';
@@ -159,6 +160,7 @@ export function PlatformPage(): JSX.Element {
           onReactivate={(id) => run(`react-${id}`, () => reactivatePlatformTenant(opts(token!), id))}
           onArchive={(id) => run(`archive-${id}`, () => archiveTenant(opts(token!), id))}
           onCancelOffboard={(id) => run(`cancel-off-${id}`, () => cancelTenantOffboarding(opts(token!), id))}
+          onSetLegalHold={(id, hold) => run(`hold-${id}`, () => setTenantLegalHold(opts(token!), id, hold))}
         />
 
         {canManageSubscription && (
@@ -255,7 +257,7 @@ function TenantSelect({ id, tenants, value, onChange }: {
   );
 }
 
-function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, onSuspend, onReactivate, onArchive, onCancelOffboard }: {
+function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, onSuspend, onReactivate, onArchive, onCancelOffboard, onSetLegalHold }: {
   readonly tenants: readonly Tenant[];
   readonly canManage: boolean;
   readonly canOffboard: boolean;
@@ -265,6 +267,7 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
   readonly onReactivate: (id: string) => Promise<void>;
   readonly onArchive: (id: string) => Promise<void>;
   readonly onCancelOffboard: (id: string) => Promise<void>;
+  readonly onSetLegalHold: (id: string, hold: boolean) => Promise<void>;
 }): JSX.Element {
   const [name, setName] = useState('');
 
@@ -333,15 +336,17 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
                         <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>terminal</span>
                       ) : status === 'offboarding' ? (
                         // Mid-pipeline: a distinct-party approval already began offboarding;
-                        // complete it (archive) or cancel during cooling-off. Both need the
-                        // offboard permission + step-up, enforced server-side.
+                        // complete it (archive) or cancel during cooling-off. Archiving is
+                        // blocked until cooling-off elapses and while a legal hold is set —
+                        // enforced server-side; mirrored here to explain the disabled state.
                         canOffboard ? (
-                          <span style={{ display: 'inline-flex', gap: space[2], justifyContent: 'flex-end' }}>
-                            <Button variant="secondary" loading={busy === `cancel-off-${t.id}`}
-                              onClick={() => void onCancelOffboard(t.id)}>Cancel</Button>
-                            <Button variant="danger" loading={busy === `archive-${t.id}`}
-                              onClick={() => void onArchive(t.id)}>Archive</Button>
-                          </span>
+                          <OffboardingActions
+                            tenant={t}
+                            busy={busy}
+                            onCancel={() => void onCancelOffboard(t.id)}
+                            onArchive={() => void onArchive(t.id)}
+                            onToggleHold={(hold) => void onSetLegalHold(t.id, hold)}
+                          />
                         ) : (
                           <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>offboarding</span>
                         )
@@ -361,6 +366,38 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
         </table>
       </div>
     </section>
+  );
+}
+
+/** Actions for a tenant mid-offboarding: cancel, complete (archive), and the legal-hold
+ *  toggle. Archive is disabled — with an explanation — while a hold is set or cooling-off
+ *  has not elapsed, mirroring the server's guards. */
+function OffboardingActions({ tenant, busy, onCancel, onArchive, onToggleHold }: {
+  readonly tenant: Tenant;
+  readonly busy: string | null;
+  readonly onCancel: () => void;
+  readonly onArchive: () => void;
+  readonly onToggleHold: (hold: boolean) => void;
+}): JSX.Element {
+  const held = tenant.legalHold === true;
+  const coolingUntil = tenant.coolingOffUntil ? new Date(tenant.coolingOffUntil) : null;
+  const coolingActive = coolingUntil !== null && coolingUntil.getTime() > Date.now();
+  const archiveBlocked = held || coolingActive;
+  const reason = held ? 'Legal hold in place'
+    : coolingActive ? `Cooling-off until ${coolingUntil!.toISOString().slice(0, 10)}`
+    : '';
+
+  return (
+    <span style={{ display: 'inline-flex', gap: space[2], alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap' }}>
+      {reason !== '' && <span style={{ fontSize: fontSize.meta, color: color.fgMuted }}>{reason}</span>}
+      <Button variant="secondary" loading={busy === `hold-${tenant.id}`}
+        onClick={() => onToggleHold(!held)}>{held ? 'Lift hold' : 'Hold'}</Button>
+      <Button variant="secondary" loading={busy === `cancel-off-${tenant.id}`}
+        onClick={onCancel}>Cancel</Button>
+      <Button variant="danger" loading={busy === `archive-${tenant.id}`}
+        disabled={archiveBlocked} title={reason}
+        onClick={onArchive}>Archive</Button>
+    </span>
   );
 }
 

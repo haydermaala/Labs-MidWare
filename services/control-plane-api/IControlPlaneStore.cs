@@ -42,6 +42,10 @@ public interface IControlPlaneStore
     /// not legal from the tenant's current state, or NotFound if the tenant is unknown.</summary>
     TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation);
 
+    /// <summary>Place or lift a legal hold on a tenant (P7, §10.3). While held, archiving
+    /// is refused regardless of cooling-off. Returns false if the tenant is unknown.</summary>
+    bool SetTenantLegalHold(string tenantId, bool hold);
+
     /// <summary>
     /// Decommission a gateway within a tenant: mark it inactive and revoke its device
     /// credential so it can no longer authenticate or fetch config. Irreversible — a

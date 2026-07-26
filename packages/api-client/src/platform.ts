@@ -137,6 +137,11 @@ export async function cancelTenantOffboarding(opts: ControlPlaneOptions, tenantI
   await req(opts, 'POST', `/api/platform/tenants/${enc(tenantId)}/cancel-offboarding`);
 }
 
+/** Place or lift a legal hold, which overrides archiving/deletion. */
+export async function setTenantLegalHold(opts: ControlPlaneOptions, tenantId: string, hold: boolean): Promise<void> {
+  await req(opts, 'POST', `/api/platform/tenants/${enc(tenantId)}/legal-hold`, { hold });
+}
+
 export function setTenantSubscription(
   opts: ControlPlaneOptions,
   tenantId: string,

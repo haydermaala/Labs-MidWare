@@ -35,7 +35,8 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         Audit(db, "tenant.created", entity.Id, entity.Name);
         db.SaveChanges();
         scope.Complete();
-        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active, entity.Offboarded, entity.Status);
+        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active, entity.Offboarded, entity.Status,
+            entity.CoolingOffUntil, entity.LegalHold);
     }
 
     // ── Tenant registry reads ────────────────────────────────────────────────
@@ -51,7 +52,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var scope = PlatformScope.Begin(db);
         var result = db.Tenants.AsNoTracking()
             .OrderBy(t => t.CreatedAt)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded, t.Status))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded, t.Status, t.CoolingOffUntil, t.LegalHold))
             .ToList();
         scope.Complete();
         return result;
@@ -72,7 +73,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var scope = TenantScope.Begin(db, tenantId);
         var tenant = db.Tenants.AsNoTracking()
             .Where(t => t.Id == tenantId)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded, t.Status))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded, t.Status, t.CoolingOffUntil, t.LegalHold))
             .FirstOrDefault();
         scope.Complete();
         return tenant;
@@ -91,7 +92,8 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         Audit(db, "tenant.renamed", tenantId, name);
         db.SaveChanges();
         scope.Complete();
-        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active, tenant.Offboarded, tenant.Status);
+        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active, tenant.Offboarded, tenant.Status,
+            tenant.CoolingOffUntil, tenant.LegalHold);
     }
 
     public bool DeactivateTenant(string tenantId) => SetTenantActive(tenantId, active: false);
@@ -140,14 +142,50 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             return TenantTransitionOutcome.InvalidTransition;
         }
+        var now = _clock.GetUtcNow();
+        // Archiving is gated by the legal hold and the cooling-off window (§10.3).
+        if (operation == TenantLifecycleOperation.Archive)
+        {
+            if (tenant.LegalHold)
+            {
+                return TenantTransitionOutcome.LegalHold;
+            }
+            if (tenant.CoolingOffUntil is { } until && now < until)
+            {
+                return TenantTransitionOutcome.CoolingOff;
+            }
+        }
         tenant.Status = to.ToString();
         // Keep the derived boolean mirrors in step with the authoritative status.
         tenant.Active = TenantLifecycle.AllowsOperation(to);
         tenant.Offboarded = to == TenantStatus.Archived;
+        // Maintain the offboarding window: opened on begin, cleared when the tenant
+        // leaves the pipeline (cancel → active, or archive → terminal).
+        tenant.OffboardingStartedAt = to == TenantStatus.Offboarding ? now : null;
+        tenant.CoolingOffUntil = to == TenantStatus.Offboarding ? now + OffboardingPolicy.CoolingOff : null;
         Audit(db, TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
         db.SaveChanges();
         scope.Complete();
         return TenantTransitionOutcome.Ok;
+    }
+
+    public bool SetTenantLegalHold(string tenantId, bool hold)
+    {
+        using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
+        var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
+        if (tenant is null)
+        {
+            return false;
+        }
+        if (tenant.LegalHold != hold)
+        {
+            tenant.LegalHold = hold;
+            Audit(db, hold ? "tenant.legal_hold_placed" : "tenant.legal_hold_lifted", tenantId, tenant.Name);
+            db.SaveChanges();
+        }
+        scope.Complete();
+        return true;
     }
 
     public bool DecommissionGateway(string tenantId, string gatewayId)

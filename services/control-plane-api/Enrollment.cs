@@ -19,7 +19,8 @@ namespace ControlPlane.Api;
 /// (<see cref="TenantStatus"/>); Active/Offboarded are derived mirrors of it.</summary>
 public sealed record Tenant(
     string Id, string Name, DateTimeOffset CreatedAt, bool Active,
-    bool Offboarded = false, string Status = nameof(TenantStatus.Active));
+    bool Offboarded = false, string Status = nameof(TenantStatus.Active),
+    DateTimeOffset? CoolingOffUntil = null, bool LegalHold = false);
 
 /// <summary>PHI-free operational counters a gateway self-reports. These are
 /// message *counts* and timing only — never any message content or result value.
@@ -157,14 +158,41 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         {
             return TenantTransitionOutcome.InvalidTransition;
         }
+        var now = _clock.GetUtcNow();
+        if (operation == TenantLifecycleOperation.Archive)
+        {
+            if (tenant.LegalHold)
+            {
+                return TenantTransitionOutcome.LegalHold;
+            }
+            if (tenant.CoolingOffUntil is { } until && now < until)
+            {
+                return TenantTransitionOutcome.CoolingOff;
+            }
+        }
         _tenants[tenantId] = tenant with
         {
             Status = to.ToString(),
             Active = TenantLifecycle.AllowsOperation(to),
             Offboarded = to == TenantStatus.Archived,
+            CoolingOffUntil = to == TenantStatus.Offboarding ? now + OffboardingPolicy.CoolingOff : null,
         };
         Audit(TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
         return TenantTransitionOutcome.Ok;
+    }
+
+    public bool SetTenantLegalHold(string tenantId, bool hold)
+    {
+        if (!_tenants.TryGetValue(tenantId, out var tenant))
+        {
+            return false;
+        }
+        if (tenant.LegalHold != hold)
+        {
+            _tenants[tenantId] = tenant with { LegalHold = hold };
+            Audit(hold ? "tenant.legal_hold_placed" : "tenant.legal_hold_lifted", tenantId, tenant.Name);
+        }
+        return true;
     }
 
     public bool DecommissionGateway(string tenantId, string gatewayId)

@@ -378,6 +378,17 @@ public sealed class TenantEntity
     /// lifecycle axis; Active/Offboarded are kept as derived mirrors of it for the
     /// enrollment/billing paths that still read them. Backfilled from those booleans.</summary>
     public string Status { get; set; } = nameof(TenantStatus.Active);
+
+    /// <summary>When offboarding began (P7, §10.3). Null unless in the offboarding pipeline.</summary>
+    public DateTimeOffset? OffboardingStartedAt { get; set; }
+
+    /// <summary>Earliest time the tenant may be archived — the end of the cooling-off
+    /// window. Null unless offboarding.</summary>
+    public DateTimeOffset? CoolingOffUntil { get; set; }
+
+    /// <summary>A legal hold overrides archiving/deletion (§10.3) — archive is refused
+    /// while set, regardless of cooling-off.</summary>
+    public bool LegalHold { get; set; }
 }
 
 /// <summary>An enrolled gateway row, scoped to a tenant.</summary>

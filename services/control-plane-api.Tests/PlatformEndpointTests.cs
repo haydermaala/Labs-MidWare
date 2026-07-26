@@ -245,6 +245,27 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Legal_Hold_Is_Gated_And_Toggles()
+    {
+        var tenant = await NewTenant("Hold Endpoint Co");
+
+        // Non-platform caller → 401.
+        var (_, strangerSession) = await NewUser("plat-hold-none@example.test");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Session(strangerSession).PostAsJsonAsync(
+            $"/api/platform/tenants/{tenant}/legal-hold", new { hold = true })).StatusCode);
+
+        // The god-mode token can place and lift the hold.
+        Assert.Equal(HttpStatusCode.NoContent, (await Admin().PostAsJsonAsync(
+            $"/api/platform/tenants/{tenant}/legal-hold", new { hold = true })).StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, (await Admin().PostAsJsonAsync(
+            $"/api/platform/tenants/{tenant}/legal-hold", new { hold = false })).StatusCode);
+
+        // Unknown tenant → 404.
+        Assert.Equal(HttpStatusCode.NotFound, (await Admin().PostAsJsonAsync(
+            "/api/platform/tenants/ten_ghost/legal-hold", new { hold = true })).StatusCode);
+    }
+
+    [Fact]
     public async Task Whoami_Reports_The_Callers_Platform_Roles()
     {
         var (userId, session) = await NewUser("plat-whoami@example.test");

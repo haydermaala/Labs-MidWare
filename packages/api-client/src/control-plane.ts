@@ -16,6 +16,10 @@ export interface Tenant {
    *  The authoritative axis; `active`/`offboarded` are derived mirrors. */
   readonly status?: string;
   readonly offboarded?: boolean;
+  /** While offboarding: the earliest time the tenant may be archived (cooling-off end). */
+  readonly coolingOffUntil?: string | null;
+  /** A legal hold overrides archiving/deletion while set. */
+  readonly legalHold?: boolean;
 }
 
 /** A gateway in the fleet view (no credential; liveness derived server-side). */
