@@ -31,6 +31,9 @@ public sealed class RlsCoverageTests
         // Platform (super-admin) role assignments (P6) — global, disjoint from tenant
         // membership, protected by platform authz not RLS. Never tenant-scoped.
         "platform_role_assignments",
+        // Platform support-access grants (P6) — global platform artifacts (tenant ref
+        // is SubjectTenantId, not TenantId); gated by platform authz, not RLS.
+        "platform_support_access_grants",
     };
 
     // Tenant-owned tables that carry no TenantId column and are covered by a

@@ -17,6 +17,14 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record UserDto(string Id, string Email);
     private sealed record LoginDto(string SessionToken, UserDto User);
     private sealed record AssignmentDto(string Id, string UserId, string Role, bool Active);
+    private sealed record SupportGrantDto(string Id, string SubjectTenantId, string Status, bool Active);
+
+    private async Task<string> NewTenant(string name) =>
+        (await (await Admin().PostAsJsonAsync("/api/tenants", new { name }))
+            .Content.ReadFromJsonAsync<TenantDto>())!.Id;
+
+    private async Task GrantPlatformRole(string userId, string role) =>
+        await Admin().PostAsJsonAsync("/api/platform/role-assignments", new { userId, role });
 
     private HttpClient Admin()
     {
@@ -112,6 +120,55 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
             $"/api/platform/tenants/{tenant.Id}/subscription", new { planId = "laboratory" })).StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, (await bill.PostAsJsonAsync(
             "/api/platform/tenants", new { name = "Nope" })).StatusCode);
+    }
+
+    [Fact]
+    public async Task Support_Access_Needs_A_Distinct_Approver()
+    {
+        var tenant = await NewTenant("Support Subject Co");
+        var (reqId, reqSession) = await NewUser("plat-sup-req@example.test");
+        await GrantPlatformRole(reqId, PlatformRoles.SupportEngineer);
+        var requester = Session(reqSession);
+        var (secId, secSession) = await NewUser("plat-security@example.test");
+        await GrantPlatformRole(secId, PlatformRoles.SecurityAdmin);
+        var security = Session(secSession);
+
+        // Support engineer requests time-limited access.
+        var opened = await requester.PostAsJsonAsync("/api/platform/support-grants",
+            new { subjectTenantId = tenant, reason = "incident 42", durationMinutes = 30 });
+        Assert.Equal(HttpStatusCode.Accepted, opened.StatusCode);
+        var grant = (await opened.Content.ReadFromJsonAsync<SupportGrantDto>())!;
+
+        // A support engineer cannot APPROVE (lacks platform.support.approve).
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await requester.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
+
+        // A distinct Security admin sees it pending and approves it.
+        var pending = await security.GetFromJsonAsync<List<SupportGrantDto>>("/api/platform/support-grants");
+        Assert.Contains(pending!, g => g.Id == grant.Id);
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await security.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
+        // Re-deciding a decided grant → 409.
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await security.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
+    }
+
+    [Fact]
+    public async Task Same_Party_Cannot_Self_Approve_Support_Access()
+    {
+        var tenant = await NewTenant("Self Approve Co");
+        // A user holding BOTH support + security roles still cannot approve their own request.
+        var (uid, session) = await NewUser("plat-both@example.test");
+        await GrantPlatformRole(uid, PlatformRoles.SupportEngineer);
+        await GrantPlatformRole(uid, PlatformRoles.SecurityAdmin);
+        var user = Session(session);
+
+        var grant = (await (await user.PostAsJsonAsync("/api/platform/support-grants",
+            new { subjectTenantId = tenant, reason = "self", durationMinutes = 15 }))
+            .Content.ReadFromJsonAsync<SupportGrantDto>())!;
+
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await user.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
     }
 
     [Fact]

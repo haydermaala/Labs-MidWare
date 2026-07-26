@@ -62,6 +62,7 @@ builder.Services.AddSingleton<ApprovalService>();
 // Platform super-admin (P6): named-role authorization + assignment persistence,
 // disjoint from tenant roles. Endpoints + god-mode-token retirement are the next slice.
 builder.Services.AddSingleton<PlatformAdminService>();
+builder.Services.AddSingleton<PlatformSupportService>();
 builder.Services.AddSingleton<IPlatformAuthorizationEngine, PlatformAuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
@@ -188,6 +189,7 @@ var authzClock = app.Services.GetRequiredService<TimeProvider>();
 // Platform (super-admin) authorization — disjoint from tenant authz (P6, ADR §8).
 var platformEngine = app.Services.GetRequiredService<IPlatformAuthorizationEngine>();
 var platformAdmin = app.Services.GetRequiredService<PlatformAdminService>();
+var platformSupport = app.Services.GetRequiredService<PlatformSupportService>();
 
 bool IsAdmin(HttpRequest req) =>
     !string.IsNullOrEmpty(adminToken) &&
@@ -724,6 +726,55 @@ app.MapPost("/api/platform/tenants/{tenantId}/subscription",
     return Results.Json(billing.EntitlementsFor(tenantId));
 });
 
+// Platform support-access grants (Support requests; Security approves; dynamic SoD).
+IResult SupportDecideResult(PlatformSupportService.DecideOutcome outcome) => outcome switch
+{
+    PlatformSupportService.DecideOutcome.Ok => Results.NoContent(),
+    PlatformSupportService.DecideOutcome.NotFound => Results.NotFound(),
+    PlatformSupportService.DecideOutcome.NotPending => Results.Conflict(new { error = "request is not pending" }),
+    PlatformSupportService.DecideOutcome.SameParty => Results.Json(
+        new { error = "the approver must be a different person than the requester" },
+        statusCode: StatusCodes.Status403Forbidden),
+    _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
+};
+
+app.MapPost("/api/platform/support-grants",
+    (RequestSupportGrantRequest body, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.SupportRequest) is { } denied) return denied;
+    if (string.IsNullOrWhiteSpace(body.SubjectTenantId) || !store.TenantExists(body.SubjectTenantId))
+    {
+        return Results.BadRequest(new { error = "unknown tenant" });
+    }
+    var requesterUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var grant = platformSupport.Request(
+        body.SubjectTenantId, requesterUserId, body.Reason ?? "", body.DurationMinutes ?? 60);
+    return Results.Json(grant, statusCode: StatusCodes.Status202Accepted);
+});
+
+app.MapGet("/api/platform/support-grants",
+    (AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.SupportApprove) is { } denied) return denied;
+    return Results.Json(platformSupport.Pending());
+});
+
+app.MapPost("/api/platform/support-grants/{grantId}/approve",
+    (string grantId, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.SupportApprove) is { } denied) return denied;
+    var approverUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return SupportDecideResult(platformSupport.Approve(grantId, approverUserId));
+});
+
+app.MapPost("/api/platform/support-grants/{grantId}/reject",
+    (string grantId, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.SupportApprove) is { } denied) return denied;
+    var deciderUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return SupportDecideResult(platformSupport.Reject(grantId, deciderUserId));
+});
+
 // --- identity: users + sessions (Phase C1) ---------------------------------
 // Session resolution: `Authorization: Bearer ses_…` (SPA) or the `lc_session`
 // HttpOnly cookie (same-site browser use). Cookie hardening to __Host- prefix +
@@ -1256,6 +1307,9 @@ internal sealed record PlatformProvisionTenantRequest(string Name);
 
 /// <summary>Set a tenant's subscription plan from the platform surface (P6).</summary>
 internal sealed record SetSubscriptionRequest(string? PlanId, string? Status);
+
+/// <summary>Request time-limited support access to a tenant (P6).</summary>
+internal sealed record RequestSupportGrantRequest(string SubjectTenantId, string? Reason, int? DurationMinutes);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

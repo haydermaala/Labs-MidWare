@@ -36,6 +36,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<RolePermissionEntity> RolePermissions => Set<RolePermissionEntity>();
     public DbSet<ApprovalRequestEntity> ApprovalRequests => Set<ApprovalRequestEntity>();
     public DbSet<PlatformRoleAssignmentEntity> PlatformRoleAssignments => Set<PlatformRoleAssignmentEntity>();
+    public DbSet<PlatformSupportGrantEntity> PlatformSupportGrants => Set<PlatformSupportGrantEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -213,6 +214,16 @@ public sealed class AppDbContext : DbContext
             e.ToTable("platform_role_assignments");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<PlatformSupportGrantEntity>(e =>
+        {
+            // A time-limited tenant support-access grant (P6). GLOBAL/platform artifact:
+            // the tenant reference is "SubjectTenantId" (NOT "TenantId") on purpose, so it
+            // is not tenant-RLS-scoped — it is a platform record, gated by platform authz.
+            e.ToTable("platform_support_access_grants");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.SubjectTenantId);
         });
     }
 }
@@ -543,4 +554,31 @@ public sealed class PlatformRoleAssignmentEntity
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
+}
+
+/// <summary>A time-limited tenant support-access grant (P6): a platform support
+/// engineer requests standing access to a tenant, and a DISTINCT approver
+/// (platform.support.approve) grants it. GLOBAL/platform artifact — the tenant
+/// reference is <see cref="SubjectTenantId"/> (not TenantId) so it is not
+/// tenant-RLS-scoped. Access is live only while approved and unexpired.</summary>
+public sealed class PlatformSupportGrantEntity
+{
+    public string Id { get; set; } = "";
+    public string SubjectTenantId { get; set; } = "";
+    public string RequesterUserId { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public int RequestedDurationMinutes { get; set; }
+    public string Status { get; set; } = SupportGrantStatus.Pending;
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public string? DecidedByUserId { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
+}
+
+/// <summary>The lifecycle states of a <see cref="PlatformSupportGrantEntity"/>.</summary>
+public static class SupportGrantStatus
+{
+    public const string Pending = "pending";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
 }
