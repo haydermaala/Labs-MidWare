@@ -7,9 +7,9 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import {
-  approveOffboard, approveSupportGrant, grantPlatformRole, listOffboardRequests,
-  listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents, listSupportGrants,
-  provisionTenant, reactivatePlatformTenant, rejectOffboard, rejectSupportGrant,
+  approveOffboard, approveSupportGrant, archiveTenant, cancelTenantOffboarding, grantPlatformRole,
+  listOffboardRequests, listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents,
+  listSupportGrants, provisionTenant, reactivatePlatformTenant, rejectOffboard, rejectSupportGrant,
   requestOffboard, requestSupportGrant, revokePlatformRole, setTenantSubscription, suspendTenant,
   type ControlPlaneOptions, type PlatformOffboardRequest, type PlatformRoleAssignment,
   type PlatformSecurityEvent, type PlatformSupportGrant, type Tenant,
@@ -152,10 +152,13 @@ export function PlatformPage(): JSX.Element {
         <TenantsSection
           tenants={tenants}
           canManage={canManageTenants}
+          canOffboard={canOffboard}
           busy={busy}
           onProvision={(name) => run('provision', async () => { await provisionTenant(opts(token!), name); })}
           onSuspend={(id) => run(`suspend-${id}`, () => suspendTenant(opts(token!), id))}
           onReactivate={(id) => run(`react-${id}`, () => reactivatePlatformTenant(opts(token!), id))}
+          onArchive={(id) => run(`archive-${id}`, () => archiveTenant(opts(token!), id))}
+          onCancelOffboard={(id) => run(`cancel-off-${id}`, () => cancelTenantOffboarding(opts(token!), id))}
         />
 
         {canManageSubscription && (
@@ -252,13 +255,16 @@ function TenantSelect({ id, tenants, value, onChange }: {
   );
 }
 
-function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onReactivate }: {
+function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, onSuspend, onReactivate, onArchive, onCancelOffboard }: {
   readonly tenants: readonly Tenant[];
   readonly canManage: boolean;
+  readonly canOffboard: boolean;
   readonly busy: string | null;
   readonly onProvision: (name: string) => Promise<void>;
   readonly onSuspend: (id: string) => Promise<void>;
   readonly onReactivate: (id: string) => Promise<void>;
+  readonly onArchive: (id: string) => Promise<void>;
+  readonly onCancelOffboard: (id: string) => Promise<void>;
 }): JSX.Element {
   const [name, setName] = useState('');
 
@@ -315,7 +321,6 @@ function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onRe
           <tbody>
             {tenants.map((t) => {
               const status = statusOf(t);
-              const offboarded = status === 'archived' || status === 'offboarding';
               return (
                 <tr key={t.id}>
                   <td style={td}><div style={{ fontWeight: 600 }}>{t.name}</div>
@@ -324,8 +329,22 @@ function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onRe
                   <td style={{ ...td, whiteSpace: 'nowrap' }} className="lc-tabular">{fmtDate(t.createdAt)}</td>
                   {canManage && (
                     <td style={{ ...td, textAlign: 'right' }}>
-                      {offboarded ? (
+                      {status === 'archived' ? (
                         <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>terminal</span>
+                      ) : status === 'offboarding' ? (
+                        // Mid-pipeline: a distinct-party approval already began offboarding;
+                        // complete it (archive) or cancel during cooling-off. Both need the
+                        // offboard permission + step-up, enforced server-side.
+                        canOffboard ? (
+                          <span style={{ display: 'inline-flex', gap: space[2], justifyContent: 'flex-end' }}>
+                            <Button variant="secondary" loading={busy === `cancel-off-${t.id}`}
+                              onClick={() => void onCancelOffboard(t.id)}>Cancel</Button>
+                            <Button variant="danger" loading={busy === `archive-${t.id}`}
+                              onClick={() => void onArchive(t.id)}>Archive</Button>
+                          </span>
+                        ) : (
+                          <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>offboarding</span>
+                        )
                       ) : t.active ? (
                         <Button variant="secondary" loading={busy === `suspend-${t.id}`}
                           onClick={() => void onSuspend(t.id)}>Suspend</Button>

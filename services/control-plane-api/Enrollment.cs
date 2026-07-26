@@ -128,8 +128,9 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         {
             return false;
         }
-        // An offboarded tenant is terminal — never reactivate it.
-        if (active && tenant.Offboarded)
+        // Never resurrect an archived (terminal) tenant, nor one in the offboarding
+        // pipeline — that requires an explicit CancelOffboarding transition.
+        if (active && (tenant.Offboarded || tenant.Status == nameof(TenantStatus.Offboarding)))
         {
             return false;
         }
@@ -145,23 +146,25 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         return true;
     }
 
-    /// <summary>Terminally offboard a tenant (P6): permanently close it (also
-    /// deactivates). Returns false if the tenant does not exist.</summary>
-    public bool OffboardTenant(string tenantId)
+    public TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation)
     {
         if (!_tenants.TryGetValue(tenantId, out var tenant))
         {
-            return false;
+            return TenantTransitionOutcome.NotFound;
         }
-        if (!tenant.Offboarded)
+        var from = TenantLifecycle.Parse(tenant.Status, tenant.Active, tenant.Offboarded);
+        if (TenantLifecycle.Target(from, operation) is not { } to || !TenantLifecycle.CanTransition(from, to))
         {
-            _tenants[tenantId] = tenant with
-            {
-                Offboarded = true, Active = false, Status = nameof(TenantStatus.Archived),
-            };
-            Audit("tenant.offboarded", tenantId, tenant.Name);
+            return TenantTransitionOutcome.InvalidTransition;
         }
-        return true;
+        _tenants[tenantId] = tenant with
+        {
+            Status = to.ToString(),
+            Active = TenantLifecycle.AllowsOperation(to),
+            Offboarded = to == TenantStatus.Archived,
+        };
+        Audit(TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
+        return TenantTransitionOutcome.Ok;
     }
 
     public bool DecommissionGateway(string tenantId, string gatewayId)

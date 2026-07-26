@@ -835,8 +835,11 @@ app.MapPost("/api/platform/offboard-requests/{requestId}/approve",
     var (outcome, subjectTenantId) = platformOffboard.Approve(requestId, approverUserId);
     if (outcome == PlatformOffboardService.DecideOutcome.Ok)
     {
-        store.OffboardTenant(subjectTenantId!);
-        platformAudit.Record("platform.tenant.offboarded", approverUserId, subjectTenantId!);
+        // Approval BEGINS the offboarding pipeline (active → offboarding): it is now
+        // cancellable during cooling-off and completed by a separate archive step,
+        // rather than jumping straight to the terminal archived state.
+        store.TransitionTenant(subjectTenantId!, TenantLifecycleOperation.BeginOffboarding);
+        platformAudit.Record("platform.tenant.offboarding_started", approverUserId, subjectTenantId!);
         return Results.NoContent();
     }
     return outcome switch
@@ -861,6 +864,41 @@ app.MapPost("/api/platform/offboard-requests/{requestId}/reject",
         PlatformOffboardService.DecideOutcome.NotFound => Results.NotFound(),
         _ => Results.Conflict(new { error = "request is not pending" }),
     };
+});
+
+// Complete an offboarding into the terminal archived state (after export/retention/
+// legal-hold checks). Only legal from the offboarding state (the state machine guards it).
+app.MapPost("/api/platform/tenants/{tenantId}/archive",
+    (string tenantId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var outcome = store.TransitionTenant(tenantId, TenantLifecycleOperation.Archive);
+    if (outcome == TenantTransitionOutcome.Ok)
+    {
+        platformAudit.Record("platform.tenant.archived", actorUserId, tenantId);
+        return Results.NoContent();
+    }
+    return outcome == TenantTransitionOutcome.NotFound
+        ? Results.NotFound()
+        : Results.Conflict(new { error = "tenant is not in the offboarding state" });
+});
+
+// Cancel offboarding during cooling-off, returning the tenant to active.
+app.MapPost("/api/platform/tenants/{tenantId}/cancel-offboarding",
+    (string tenantId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var outcome = store.TransitionTenant(tenantId, TenantLifecycleOperation.CancelOffboarding);
+    if (outcome == TenantTransitionOutcome.Ok)
+    {
+        platformAudit.Record("platform.tenant.offboarding_cancelled", actorUserId, tenantId);
+        return Results.NoContent();
+    }
+    return outcome == TenantTransitionOutcome.NotFound
+        ? Results.NotFound()
+        : Results.Conflict(new { error = "tenant is not in the offboarding state" });
 });
 
 // Platform security/audit event log (Security + Auditor review).

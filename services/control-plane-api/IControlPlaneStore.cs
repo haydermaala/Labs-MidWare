@@ -35,9 +35,12 @@ public interface IControlPlaneStore
     /// or if the tenant has been (terminally) offboarded.</summary>
     bool ReactivateTenant(string tenantId);
 
-    /// <summary>Terminally offboard a tenant (P6): permanently close it (also
-    /// deactivates); it can never be reactivated. Returns false if unknown.</summary>
-    bool OffboardTenant(string tenantId);
+    /// <summary>Apply a lifecycle transition (P7), guarded by the <see cref="TenantLifecycle"/>
+    /// state machine: begin/cancel/complete offboarding and any other named operation. The
+    /// tenant's Status and the derived Active/Offboarded mirrors are updated together.
+    /// Returns <see cref="TenantTransitionOutcome.InvalidTransition"/> if the operation is
+    /// not legal from the tenant's current state, or NotFound if the tenant is unknown.</summary>
+    TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation);
 
     /// <summary>
     /// Decommission a gateway within a tenant: mark it inactive and revoke its device

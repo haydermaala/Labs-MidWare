@@ -66,11 +66,42 @@ public enum TenantLifecycleOperation
     Archive,
 }
 
+/// <summary>The result of a store lifecycle transition.</summary>
+public enum TenantTransitionOutcome
+{
+    /// <summary>Applied.</summary>
+    Ok,
+
+    /// <summary>The tenant does not exist.</summary>
+    NotFound,
+
+    /// <summary>The operation is not legal from the tenant's current state.</summary>
+    InvalidTransition,
+}
+
 /// <summary>The tenant lifecycle: which states may follow which, which states permit
 /// normal tenant operation, and the mapping from named operations. Deny-by-default:
 /// an edge not listed here is not a legal transition.</summary>
 public static class TenantLifecycle
 {
+    /// <summary>Parse a stored status name, falling back to the legacy booleans when the
+    /// column is absent/garbled (defensive; the backfill populates every row).</summary>
+    public static TenantStatus Parse(string? status, bool active, bool offboarded) =>
+        Enum.TryParse<TenantStatus>(status, out var s) ? s : FromLegacy(active, offboarded);
+
+    /// <summary>The audit event kind for a named operation.</summary>
+    public static string AuditKind(TenantLifecycleOperation op) => op switch
+    {
+        TenantLifecycleOperation.Activate => "tenant.activated",
+        TenantLifecycleOperation.EnterGrace => "tenant.grace_entered",
+        TenantLifecycleOperation.Suspend => "tenant.suspended",
+        TenantLifecycleOperation.Restore => "tenant.restored",
+        TenantLifecycleOperation.BeginOffboarding => "tenant.offboarding_started",
+        TenantLifecycleOperation.CancelOffboarding => "tenant.offboarding_cancelled",
+        TenantLifecycleOperation.Archive => "tenant.archived",
+        _ => "tenant.transition",
+    };
+
     /// <summary>Allowed transitions, from → the states it may move to. Archived is
     /// absent (terminal). Grace/Suspended can still enter offboarding; Offboarding can
     /// be cancelled back to Active or completed to Archived.</summary>

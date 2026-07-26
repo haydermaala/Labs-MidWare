@@ -1,8 +1,9 @@
-// Two-party tenant offboarding flow (P6, program prompt §9). Offboarding a tenant is
-// terminal and destructive, so — like a support-access grant — a requester opens it
-// and a DISTINCT approver executes it (a user may not approve their own tenant
-// offboarding request, SeparationOfDuty.IsDistinctParty). The actual offboarding
-// (IControlPlaneStore.OffboardTenant) is run by the endpoint on approval.
+// Two-party tenant offboarding flow (P6/P7, program prompt §9/§10.3). Offboarding a
+// tenant is destructive, so — like a support-access grant — a requester opens it and a
+// DISTINCT approver executes it (a user may not approve their own tenant offboarding
+// request, SeparationOfDuty.IsDistinctParty). On approval the endpoint BEGINS the
+// offboarding pipeline (IControlPlaneStore.TransitionTenant → offboarding), which is
+// cancellable during cooling-off and completed by a separate archive step.
 //
 // GLOBAL/platform: the tenant reference is SubjectTenantId (not TenantId), so this is
 // not tenant-RLS-scoped — it is a platform artifact gated by platform authz.

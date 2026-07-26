@@ -3,8 +3,9 @@ using Microsoft.EntityFrameworkCore;
 
 namespace ControlPlane.Api.Tests;
 
-/// <summary>P6 two-party tenant offboarding: a distinct approver executes the terminal
-/// offboarding (dynamic SoD), and an offboarded tenant can never be reactivated.</summary>
+/// <summary>P6/P7 two-party tenant offboarding: a distinct approver begins the
+/// offboarding pipeline (dynamic SoD); the pipeline is cancellable during cooling-off
+/// and completed by a separate archive step; an archived tenant is terminal.</summary>
 public sealed class PlatformOffboardServiceTests
 {
     private sealed class Factory(string name) : IDbContextFactory<AppDbContext>
@@ -48,20 +49,40 @@ public sealed class PlatformOffboardServiceTests
     }
 
     [Fact]
-    public void Offboarded_Tenant_Is_Terminal_And_Cannot_Be_Reactivated()
+    public void Offboarding_Is_A_Cancellable_Pipeline_Ending_In_A_Terminal_Archive()
     {
         var store = new InMemoryControlPlaneStore(TimeProvider.System);
         var tenant = store.CreateTenant("Terminal Co");
 
-        Assert.True(store.OffboardTenant(tenant.Id));
-        var after = store.FindTenant(tenant.Id)!;
-        Assert.False(after.Active);
-        Assert.True(after.Offboarded);
+        // Approval BEGINS offboarding: the tenant leaves active but is NOT yet terminal.
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(tenant.Id, TenantLifecycleOperation.BeginOffboarding));
+        var offboarding = store.FindTenant(tenant.Id)!;
+        Assert.False(offboarding.Active);
+        Assert.False(offboarding.Offboarded);
+        Assert.Equal(nameof(TenantStatus.Offboarding), offboarding.Status);
 
-        // Reactivation is refused for an offboarded tenant.
+        // A plain reactivate cannot resurrect a tenant mid-pipeline…
         Assert.False(store.ReactivateTenant(tenant.Id));
-        Assert.False(store.FindTenant(tenant.Id)!.Active);
-        // Offboarding an unknown tenant is false.
-        Assert.False(store.OffboardTenant("ten_ghost"));
+        // …but cancelling offboarding during cooling-off returns it to active.
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(tenant.Id, TenantLifecycleOperation.CancelOffboarding));
+        Assert.True(store.FindTenant(tenant.Id)!.Active);
+
+        // Re-begin, then complete the pipeline to the terminal archived state.
+        store.TransitionTenant(tenant.Id, TenantLifecycleOperation.BeginOffboarding);
+        Assert.Equal(TenantTransitionOutcome.Ok,
+            store.TransitionTenant(tenant.Id, TenantLifecycleOperation.Archive));
+        var archived = store.FindTenant(tenant.Id)!;
+        Assert.True(archived.Offboarded);
+        Assert.Equal(nameof(TenantStatus.Archived), archived.Status);
+
+        // Archived is terminal: neither reactivate nor any further transition applies.
+        Assert.False(store.ReactivateTenant(tenant.Id));
+        Assert.Equal(TenantTransitionOutcome.InvalidTransition,
+            store.TransitionTenant(tenant.Id, TenantLifecycleOperation.CancelOffboarding));
+        // Transitioning an unknown tenant is NotFound.
+        Assert.Equal(TenantTransitionOutcome.NotFound,
+            store.TransitionTenant("ten_ghost", TenantLifecycleOperation.BeginOffboarding));
     }
 }

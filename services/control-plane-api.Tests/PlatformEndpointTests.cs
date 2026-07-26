@@ -221,6 +221,30 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Archive_And_Cancel_Offboarding_Are_Gated_And_State_Guarded()
+    {
+        var tenant = await NewTenant("Pipeline Co");
+
+        // Non-platform caller → 401 on both pipeline-completion endpoints.
+        var (_, strangerSession) = await NewUser("plat-pipe-none@example.test");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await Session(strangerSession).PostAsync($"/api/platform/tenants/{tenant}/archive", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Session(strangerSession)
+            .PostAsync($"/api/platform/tenants/{tenant}/cancel-offboarding", null)).StatusCode);
+
+        // The god-mode token reaches the handler, but the state machine refuses to archive
+        // or cancel a tenant that is not in the offboarding pipeline → 409 Conflict.
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await Admin().PostAsync($"/api/platform/tenants/{tenant}/archive", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict,
+            (await Admin().PostAsync($"/api/platform/tenants/{tenant}/cancel-offboarding", null)).StatusCode);
+
+        // Unknown tenant → 404.
+        Assert.Equal(HttpStatusCode.NotFound,
+            (await Admin().PostAsync("/api/platform/tenants/ten_ghost/archive", null)).StatusCode);
+    }
+
+    [Fact]
     public async Task Whoami_Reports_The_Callers_Platform_Roles()
     {
         var (userId, session) = await NewUser("plat-whoami@example.test");

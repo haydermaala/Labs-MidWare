@@ -127,6 +127,16 @@ export async function reactivatePlatformTenant(opts: ControlPlaneOptions, tenant
   await req(opts, 'POST', `/api/platform/tenants/${enc(tenantId)}/reactivate`);
 }
 
+/** Complete offboarding into the terminal archived state (only from the offboarding state). */
+export async function archiveTenant(opts: ControlPlaneOptions, tenantId: string): Promise<void> {
+  await req(opts, 'POST', `/api/platform/tenants/${enc(tenantId)}/archive`);
+}
+
+/** Cancel offboarding during cooling-off, returning the tenant to active. */
+export async function cancelTenantOffboarding(opts: ControlPlaneOptions, tenantId: string): Promise<void> {
+  await req(opts, 'POST', `/api/platform/tenants/${enc(tenantId)}/cancel-offboarding`);
+}
+
 export function setTenantSubscription(
   opts: ControlPlaneOptions,
   tenantId: string,

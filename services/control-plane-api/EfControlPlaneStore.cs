@@ -107,8 +107,9 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             return false;
         }
-        // An offboarded tenant is terminal — never reactivate it.
-        if (active && tenant.Offboarded)
+        // Never resurrect an archived (terminal) tenant, nor one already in the
+        // offboarding pipeline — that requires an explicit CancelOffboarding transition.
+        if (active && (tenant.Offboarded || tenant.Status == nameof(TenantStatus.Offboarding)))
         {
             return false;
         }
@@ -124,25 +125,29 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         return true;
     }
 
-    public bool OffboardTenant(string tenantId)
+    public TenantTransitionOutcome TransitionTenant(string tenantId, TenantLifecycleOperation operation)
     {
         using var db = _factory.CreateDbContext();
         using var scope = TenantScope.Begin(db, tenantId);
         var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
         if (tenant is null)
         {
-            return false;
+            return TenantTransitionOutcome.NotFound;
         }
-        if (!tenant.Offboarded)
+        var from = TenantLifecycle.Parse(tenant.Status, tenant.Active, tenant.Offboarded);
+        // Deny-by-default: the operation must yield a legal edge from the current state.
+        if (TenantLifecycle.Target(from, operation) is not { } to || !TenantLifecycle.CanTransition(from, to))
         {
-            tenant.Offboarded = true;
-            tenant.Active = false;
-            tenant.Status = nameof(TenantStatus.Archived);
-            Audit(db, "tenant.offboarded", tenantId, tenant.Name);
-            db.SaveChanges();
+            return TenantTransitionOutcome.InvalidTransition;
         }
+        tenant.Status = to.ToString();
+        // Keep the derived boolean mirrors in step with the authoritative status.
+        tenant.Active = TenantLifecycle.AllowsOperation(to);
+        tenant.Offboarded = to == TenantStatus.Archived;
+        Audit(db, TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
+        db.SaveChanges();
         scope.Complete();
-        return true;
+        return TenantTransitionOutcome.Ok;
     }
 
     public bool DecommissionGateway(string tenantId, string gatewayId)
