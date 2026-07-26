@@ -35,7 +35,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         Audit(db, "tenant.created", entity.Id, entity.Name);
         db.SaveChanges();
         scope.Complete();
-        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active);
+        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active, entity.Offboarded);
     }
 
     // ── Tenant registry reads ────────────────────────────────────────────────
@@ -51,7 +51,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var scope = PlatformScope.Begin(db);
         var result = db.Tenants.AsNoTracking()
             .OrderBy(t => t.CreatedAt)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded))
             .ToList();
         scope.Complete();
         return result;
@@ -72,7 +72,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var scope = TenantScope.Begin(db, tenantId);
         var tenant = db.Tenants.AsNoTracking()
             .Where(t => t.Id == tenantId)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded))
             .FirstOrDefault();
         scope.Complete();
         return tenant;
@@ -91,7 +91,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         Audit(db, "tenant.renamed", tenantId, name);
         db.SaveChanges();
         scope.Complete();
-        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active);
+        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active, tenant.Offboarded);
     }
 
     public bool DeactivateTenant(string tenantId) => SetTenantActive(tenantId, active: false);
@@ -107,10 +107,35 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             return false;
         }
+        // An offboarded tenant is terminal — never reactivate it.
+        if (active && tenant.Offboarded)
+        {
+            return false;
+        }
         if (tenant.Active != active)
         {
             tenant.Active = active;
             Audit(db, active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
+            db.SaveChanges();
+        }
+        scope.Complete();
+        return true;
+    }
+
+    public bool OffboardTenant(string tenantId)
+    {
+        using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
+        var tenant = db.Tenants.FirstOrDefault(t => t.Id == tenantId);
+        if (tenant is null)
+        {
+            return false;
+        }
+        if (!tenant.Offboarded)
+        {
+            tenant.Offboarded = true;
+            tenant.Active = false;
+            Audit(db, "tenant.offboarded", tenantId, tenant.Name);
             db.SaveChanges();
         }
         scope.Complete();

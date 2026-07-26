@@ -36,6 +36,8 @@ public sealed class RlsCoverageTests
         "platform_support_access_grants",
         // Platform security/audit events (P6) — append-only global platform log.
         "platform_security_events",
+        // Platform two-party tenant offboarding requests (P6) — global platform artifact.
+        "platform_offboard_requests",
     };
 
     // Tenant-owned tables that carry no TenantId column and are covered by a

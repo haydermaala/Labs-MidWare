@@ -64,6 +64,7 @@ builder.Services.AddSingleton<ApprovalService>();
 builder.Services.AddSingleton<PlatformAdminService>();
 builder.Services.AddSingleton<PlatformSupportService>();
 builder.Services.AddSingleton<PlatformAuditService>();
+builder.Services.AddSingleton<PlatformOffboardService>();
 builder.Services.AddSingleton<IPlatformAuthorizationEngine, PlatformAuthorizationEngine>();
 
 // Billing provider: Stripe when a secret key is configured (Phase E3),
@@ -192,6 +193,7 @@ var platformEngine = app.Services.GetRequiredService<IPlatformAuthorizationEngin
 var platformAdmin = app.Services.GetRequiredService<PlatformAdminService>();
 var platformSupport = app.Services.GetRequiredService<PlatformSupportService>();
 var platformAudit = app.Services.GetRequiredService<PlatformAuditService>();
+var platformOffboard = app.Services.GetRequiredService<PlatformOffboardService>();
 
 bool IsAdmin(HttpRequest req) =>
     !string.IsNullOrEmpty(adminToken) &&
@@ -785,6 +787,64 @@ app.MapPost("/api/platform/support-grants/{grantId}/reject",
     return SupportDecideResult(platformSupport.Reject(grantId, deciderUserId));
 });
 
+// Platform tenant offboarding (two-party, §9) — a distinct approver executes the
+// terminal offboarding.
+app.MapPost("/api/platform/offboard-requests",
+    (RequestOffboardRequest body, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    if (string.IsNullOrWhiteSpace(body.SubjectTenantId) || !store.TenantExists(body.SubjectTenantId))
+    {
+        return Results.BadRequest(new { error = "unknown tenant" });
+    }
+    var requesterUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var request = platformOffboard.Request(body.SubjectTenantId, requesterUserId, body.Reason ?? "");
+    return Results.Json(request, statusCode: StatusCodes.Status202Accepted);
+});
+
+app.MapGet("/api/platform/offboard-requests",
+    (AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    return Results.Json(platformOffboard.Pending());
+});
+
+app.MapPost("/api/platform/offboard-requests/{requestId}/approve",
+    (string requestId, IControlPlaneStore store, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    var approverUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    var (outcome, subjectTenantId) = platformOffboard.Approve(requestId, approverUserId);
+    if (outcome == PlatformOffboardService.DecideOutcome.Ok)
+    {
+        store.OffboardTenant(subjectTenantId!);
+        platformAudit.Record("platform.tenant.offboarded", approverUserId, subjectTenantId!);
+        return Results.NoContent();
+    }
+    return outcome switch
+    {
+        PlatformOffboardService.DecideOutcome.NotFound => Results.NotFound(),
+        PlatformOffboardService.DecideOutcome.NotPending => Results.Conflict(new { error = "request is not pending" }),
+        PlatformOffboardService.DecideOutcome.SameParty => Results.Json(
+            new { error = "the approver must be a different person than the requester" },
+            statusCode: StatusCodes.Status403Forbidden),
+        _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
+    };
+});
+
+app.MapPost("/api/platform/offboard-requests/{requestId}/reject",
+    (string requestId, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantOffboard) is { } denied) return denied;
+    var deciderUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    return platformOffboard.Reject(requestId, deciderUserId) switch
+    {
+        PlatformOffboardService.DecideOutcome.Ok => Results.NoContent(),
+        PlatformOffboardService.DecideOutcome.NotFound => Results.NotFound(),
+        _ => Results.Conflict(new { error = "request is not pending" }),
+    };
+});
+
 // Platform security/audit event log (Security + Auditor review).
 app.MapGet("/api/platform/security-events",
     (int? limit, AuthService auth, HttpRequest req) =>
@@ -1328,6 +1388,9 @@ internal sealed record SetSubscriptionRequest(string? PlanId, string? Status);
 
 /// <summary>Request time-limited support access to a tenant (P6).</summary>
 internal sealed record RequestSupportGrantRequest(string SubjectTenantId, string? Reason, int? DurationMinutes);
+
+/// <summary>Request the terminal offboarding of a tenant (P6, two-party).</summary>
+internal sealed record RequestOffboardRequest(string SubjectTenantId, string? Reason);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

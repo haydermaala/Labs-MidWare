@@ -38,6 +38,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<PlatformRoleAssignmentEntity> PlatformRoleAssignments => Set<PlatformRoleAssignmentEntity>();
     public DbSet<PlatformSupportGrantEntity> PlatformSupportGrants => Set<PlatformSupportGrantEntity>();
     public DbSet<PlatformSecurityEventEntity> PlatformSecurityEvents => Set<PlatformSecurityEventEntity>();
+    public DbSet<PlatformOffboardRequestEntity> PlatformOffboardRequests => Set<PlatformOffboardRequestEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -234,6 +235,15 @@ public sealed class AppDbContext : DbContext
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.At);
         });
+
+        modelBuilder.Entity<PlatformOffboardRequestEntity>(e =>
+        {
+            // Two-party tenant offboarding requests (P6, §9). GLOBAL/platform — tenant
+            // reference is SubjectTenantId (not TenantId), so not tenant-RLS-scoped.
+            e.ToTable("platform_offboard_requests");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.SubjectTenantId);
+        });
     }
 }
 
@@ -357,6 +367,11 @@ public sealed class TenantEntity
 
     /// <summary>Inactive tenants are retained but cannot enroll new gateways.</summary>
     public bool Active { get; set; } = true;
+
+    /// <summary>Terminal state (P6): an offboarded tenant is permanently closed via the
+    /// two-party platform offboarding flow. Data is retained but it can never be
+    /// reactivated. Distinct from a (reversible) suspend.</summary>
+    public bool Offboarded { get; set; }
 }
 
 /// <summary>An enrolled gateway row, scoped to a tenant.</summary>
@@ -602,4 +617,20 @@ public sealed class PlatformSecurityEventEntity
     public string Kind { get; set; } = "";
     public string ActorUserId { get; set; } = "";
     public string Detail { get; set; } = "";
+}
+
+/// <summary>A two-party tenant offboarding request (P6, §9): a platform operator
+/// requests a tenant's terminal offboarding, and a DISTINCT approver executes it.
+/// GLOBAL/platform — tenant reference is <see cref="SubjectTenantId"/> (not TenantId),
+/// so not tenant-RLS-scoped. Reuses <see cref="ApprovalStatus"/>.</summary>
+public sealed class PlatformOffboardRequestEntity
+{
+    public string Id { get; set; } = "";
+    public string SubjectTenantId { get; set; } = "";
+    public string RequesterUserId { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public string Status { get; set; } = ApprovalStatus.Pending;
+    public DateTimeOffset CreatedAt { get; set; }
+    public string? DecidedByUserId { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
 }

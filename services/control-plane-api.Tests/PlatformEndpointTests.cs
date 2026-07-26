@@ -19,6 +19,7 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     private sealed record AssignmentDto(string Id, string UserId, string Role, bool Active);
     private sealed record SupportGrantDto(string Id, string SubjectTenantId, string Status, bool Active);
     private sealed record SecurityEventDto(string Id, DateTimeOffset At, string Kind, string ActorUserId, string Detail);
+    private sealed record OffboardDto(string Id, string SubjectTenantId, string Status);
 
     private async Task<string> NewTenant(string name) =>
         (await (await Admin().PostAsJsonAsync("/api/tenants", new { name }))
@@ -190,6 +191,32 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
         await GrantPlatformRole(opsId, PlatformRoles.ReleaseManager); // no security_event.read
         Assert.Equal(HttpStatusCode.Forbidden,
             (await Session(opsSession).GetAsync("/api/platform/security-events")).StatusCode);
+    }
+
+    [Fact]
+    public async Task Tenant_Offboarding_Is_Gated_By_Mfa_Platform_Access_And_SoD()
+    {
+        var tenant = await NewTenant("Offboard Co");
+
+        // Non-platform user → 401.
+        var (_, strangerSession) = await NewUser("plat-off-none@example.test");
+        Assert.Equal(HttpStatusCode.Unauthorized, (await Session(strangerSession).PostAsJsonAsync(
+            "/api/platform/offboard-requests", new { subjectTenantId = tenant })).StatusCode);
+
+        // Platform Operations Admin WITHOUT MFA → step-up 403 (offboarding requires MFA).
+        var (opsId, opsSession) = await NewUser("plat-off-ops@example.test");
+        await GrantPlatformRole(opsId, PlatformRoles.OperationsAdmin);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(opsSession).PostAsJsonAsync(
+            "/api/platform/offboard-requests", new { subjectTenantId = tenant })).StatusCode);
+
+        // The god-mode token bypasses authz and can open a request…
+        var opened = await Admin().PostAsJsonAsync("/api/platform/offboard-requests",
+            new { subjectTenantId = tenant, reason = "breach" });
+        Assert.Equal(HttpStatusCode.Accepted, opened.StatusCode);
+        var request = (await opened.Content.ReadFromJsonAsync<OffboardDto>())!;
+        // …but cannot approve its own request (dynamic SoD: requester == approver).
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await Admin().PostAsync($"/api/platform/offboard-requests/{request.Id}/approve", null)).StatusCode);
     }
 
     [Fact]

@@ -31,8 +31,13 @@ public interface IControlPlaneStore
     /// </summary>
     bool DeactivateTenant(string tenantId);
 
-    /// <summary>Reactivate a previously deactivated tenant. Returns false if unknown.</summary>
+    /// <summary>Reactivate a previously deactivated tenant. Returns false if unknown
+    /// or if the tenant has been (terminally) offboarded.</summary>
     bool ReactivateTenant(string tenantId);
+
+    /// <summary>Terminally offboard a tenant (P6): permanently close it (also
+    /// deactivates); it can never be reactivated. Returns false if unknown.</summary>
+    bool OffboardTenant(string tenantId);
 
     /// <summary>
     /// Decommission a gateway within a tenant: mark it inactive and revoke its device

@@ -16,7 +16,7 @@ namespace ControlPlane.Api;
 
 /// <summary>A tenant (customer/organization). Inactive tenants are retained but
 /// cannot enroll new gateways.</summary>
-public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active);
+public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active, bool Offboarded = false);
 
 /// <summary>PHI-free operational counters a gateway self-reports. These are
 /// message *counts* and timing only — never any message content or result value.
@@ -125,10 +125,31 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         {
             return false;
         }
+        // An offboarded tenant is terminal — never reactivate it.
+        if (active && tenant.Offboarded)
+        {
+            return false;
+        }
         if (tenant.Active != active)
         {
             _tenants[tenantId] = tenant with { Active = active };
             Audit(active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
+        }
+        return true;
+    }
+
+    /// <summary>Terminally offboard a tenant (P6): permanently close it (also
+    /// deactivates). Returns false if the tenant does not exist.</summary>
+    public bool OffboardTenant(string tenantId)
+    {
+        if (!_tenants.TryGetValue(tenantId, out var tenant))
+        {
+            return false;
+        }
+        if (!tenant.Offboarded)
+        {
+            _tenants[tenantId] = tenant with { Offboarded = true, Active = false };
+            Audit("tenant.offboarded", tenantId, tenant.Name);
         }
         return true;
     }
