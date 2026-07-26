@@ -916,10 +916,14 @@ app.MapPost("/api/platform/tenants/{tenantId}/legal-hold",
 // Export a tenant's control-plane data as an artifact (§10.3 export step). Records the
 // export in the platform audit trail (who exported which tenant, when).
 app.MapGet("/api/platform/tenants/{tenantId}/export",
-    (string tenantId, IControlPlaneStore store, AuthService auth, TimeProvider clock, HttpRequest req) =>
+    (string tenantId, IControlPlaneStore store, MembershipService members, BillingService billing,
+     AuthService auth, TimeProvider clock, HttpRequest req) =>
 {
     if (PlatformForbidden(req, auth, PlatformPermissions.TenantExport) is { } denied) return denied;
-    var export = TenantExporter.Build(store, clock.GetUtcNow(), tenantId);
+    var export = TenantExporter.Build(store, clock.GetUtcNow(), tenantId,
+        members.MembersOf(tenantId).ToList(),
+        members.InvitationsFor(tenantId).ToList(),
+        billing.SubscriptionFor(tenantId));
     if (export is null)
     {
         return Results.NotFound();
