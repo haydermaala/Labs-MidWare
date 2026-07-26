@@ -13,8 +13,9 @@
 //     permission set).
 //
 // Like ScopeService/MembershipService this talks to EF directly and filters by
-// tenantId in the app layer. RLS policies for these tables land when P1 and P3
-// merge (see the program plan); TenantScope is not on this branch.
+// tenantId in the app layer. Every method binds the tenant GUC via TenantScope so
+// the P3 tables' Row-Level Security policies (AddP3RowLevelSecurity) enforce
+// isolation beneath the app-layer filter.
 
 using Microsoft.EntityFrameworkCore;
 
@@ -48,6 +49,7 @@ public sealed class RoleGrantService
         string targetUserId, string role, string scopeId, DateTimeOffset? expiresAt)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
 
         if (!db.Scopes.Any(s => s.Id == scopeId && s.TenantId == tenantId))
         {
@@ -93,6 +95,7 @@ public sealed class RoleGrantService
         };
         db.RoleAssignments.Add(entity);
         db.SaveChanges();
+        scope.Complete();
         return new GrantResult(GrantOutcome.Ok, ToView(entity), []);
     }
 
@@ -101,6 +104,7 @@ public sealed class RoleGrantService
     public bool Revoke(string tenantId, string assignmentId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var a = db.RoleAssignments.FirstOrDefault(x => x.Id == assignmentId && x.TenantId == tenantId);
         if (a is null || a.RevokedAt is not null)
         {
@@ -108,6 +112,7 @@ public sealed class RoleGrantService
         }
         a.RevokedAt = _clock.GetUtcNow();
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -116,23 +121,29 @@ public sealed class RoleGrantService
     public IReadOnlyList<RoleAssignment> ActiveAssignmentsFor(string tenantId, string userId)
     {
         using var db = _factory.CreateDbContext();
-        return db.RoleAssignments.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var rows = db.RoleAssignments.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.UserId == userId && a.RevokedAt == null)
             .AsEnumerable()
             .Select(a => new RoleAssignment(a.Id, a.UserId, a.Role, a.ScopeId, a.ExpiresAt))
             .ToList();
+        scope.Complete();
+        return rows;
     }
 
     /// <summary>A tenant's role assignments, newest last; optionally for one user.</summary>
     public IReadOnlyList<RoleAssignmentView> AssignmentsFor(string tenantId, string? userId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var rows = db.RoleAssignments.AsNoTracking().Where(a => a.TenantId == tenantId);
         if (userId is not null)
         {
             rows = rows.Where(a => a.UserId == userId);
         }
-        return rows.OrderBy(a => a.CreatedAt).AsEnumerable().Select(ToView).ToList();
+        var views = rows.OrderBy(a => a.CreatedAt).AsEnumerable().Select(ToView).ToList();
+        scope.Complete();
+        return views;
     }
 
     public enum CustomRoleOutcome { Ok, ReservedRoleKey, RoleKeyTaken, NoValidPermissions, DelegationDenied }
@@ -148,6 +159,7 @@ public sealed class RoleGrantService
         string roleKey, string name, IReadOnlyList<string> permissionKeys)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
 
         if (Roles.All.Contains(roleKey))
         {
@@ -197,6 +209,7 @@ public sealed class RoleGrantService
             });
         }
         db.SaveChanges();
+        scope.Complete();
         return new CustomRoleResult(
             CustomRoleOutcome.Ok, new CustomRoleView(entity.RoleKey, entity.Name, [.. desired.Order(StringComparer.Ordinal)]), []);
     }
@@ -206,7 +219,8 @@ public sealed class RoleGrantService
     public IReadOnlyDictionary<string, IReadOnlySet<string>> CustomGrantsFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.RolePermissions.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var grants = db.RolePermissions.AsNoTracking()
             .Where(rp => rp.TenantId == tenantId)
             .AsEnumerable()
             .GroupBy(rp => rp.RoleKey, StringComparer.Ordinal)
@@ -214,18 +228,21 @@ public sealed class RoleGrantService
                 g => g.Key,
                 g => (IReadOnlySet<string>)g.Select(rp => rp.PermissionKey).ToHashSet(StringComparer.Ordinal),
                 StringComparer.Ordinal);
+        scope.Complete();
+        return grants;
     }
 
     /// <summary>A tenant's custom roles with their permission keys.</summary>
     public IReadOnlyList<CustomRoleView> CustomRolesFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var perms = db.RolePermissions.AsNoTracking()
             .Where(rp => rp.TenantId == tenantId)
             .AsEnumerable()
             .GroupBy(rp => rp.RoleKey, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.Select(rp => rp.PermissionKey).Order(StringComparer.Ordinal).ToList(), StringComparer.Ordinal);
-        return db.CustomRoles.AsNoTracking()
+        var roles = db.CustomRoles.AsNoTracking()
             .Where(r => r.TenantId == tenantId)
             .OrderBy(r => r.CreatedAt)
             .AsEnumerable()
@@ -233,6 +250,8 @@ public sealed class RoleGrantService
                 r.RoleKey, r.Name,
                 perms.TryGetValue(r.RoleKey, out var keys) ? keys : []))
             .ToList();
+        scope.Complete();
+        return roles;
     }
 
     private static bool IsKnownRole(AppDbContext db, string tenantId, string role) =>

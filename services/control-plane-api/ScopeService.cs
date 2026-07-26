@@ -29,9 +29,11 @@ public sealed class ScopeService
     public ScopeEntity EnsureRoot(string tenantId, string name)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var root = db.Scopes.FirstOrDefault(s => s.TenantId == tenantId && s.ParentId == null);
         if (root is not null)
         {
+            scope.Complete();
             return root;
         }
         root = new ScopeEntity
@@ -46,6 +48,7 @@ public sealed class ScopeService
         root.Path = "/" + root.Id;
         db.Scopes.Add(root);
         db.SaveChanges();
+        scope.Complete();
         return root;
     }
 
@@ -55,6 +58,7 @@ public sealed class ScopeService
     public ScopeEntity? CreateChild(string tenantId, string parentId, ScopeType type, string name)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var parent = db.Scopes.FirstOrDefault(s => s.Id == parentId && s.TenantId == tenantId);
         if (parent is null || !Scopes.CanContain(Enum.Parse<ScopeType>(parent.Type), type))
         {
@@ -72,6 +76,7 @@ public sealed class ScopeService
         child.Path = parent.Path + "/" + child.Id;
         db.Scopes.Add(child);
         db.SaveChanges();
+        scope.Complete();
         return child;
     }
 
@@ -80,11 +85,13 @@ public sealed class ScopeService
     public ScopeTree? Tree(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var nodes = db.Scopes.AsNoTracking()
             .Where(s => s.TenantId == tenantId)
             .AsEnumerable()
             .Select(ToNode)
             .ToList();
+        scope.Complete();
         return nodes.Count == 0 ? null : ScopeTree.Build(nodes);
     }
 
@@ -93,12 +100,15 @@ public sealed class ScopeService
     public IReadOnlyList<ScopeView> List(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Scopes.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var views = db.Scopes.AsNoTracking()
             .Where(s => s.TenantId == tenantId)
             .OrderBy(s => s.Path)
             .AsEnumerable()
             .Select(s => new ScopeView(s.Id, s.Type, s.Name, s.ParentId, s.Path))
             .ToList();
+        scope.Complete();
+        return views;
     }
 }
 

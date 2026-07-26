@@ -111,15 +111,22 @@ var app = builder.Build();
 // release step (see ADR 0013).
 if (postgres is not null)
 {
-    using var scope = app.Services.CreateScope();
-    var factory = scope.ServiceProvider.GetRequiredService<IDbContextFactory<AppDbContext>>();
-    using var db = factory.CreateDbContext();
+    // Migrations need DDL/owner rights. Under RLS the runtime factory connects as
+    // a least-privilege role that cannot ALTER TABLE / CREATE POLICY, so the
+    // startup migration uses a dedicated migration connection (owner role) when one
+    // is configured, falling back to the runtime connection otherwise (ADR 0018
+    // §Rollout). This is the only place that connects for DDL.
+    var migrationConn = DatabaseConfig.ResolveMigrationConnectionString(app.Configuration);
+    var migrationOptions = new DbContextOptionsBuilder<AppDbContext>().UseNpgsql(migrationConn).Options;
+    using var db = new AppDbContext(migrationOptions);
     SchemaBootstrap.Apply(db);
     // Mirror the code permission catalog into permission_definitions (ADR 0019).
     PermissionCatalogSync.Apply(db);
     // Seed tenant-root role assignments from existing memberships (ADR 0020) so the
-    // scope-aware engine can later be wired in without any member losing access.
-    MembershipAssignmentBackfill.Apply(db, scope.ServiceProvider.GetRequiredService<TimeProvider>());
+    // scope-aware engine can later be wired in without any member losing access. Runs
+    // on the migration (owner) connection above, which bypasses FORCE RLS — required
+    // because the backfill is cross-tenant (see docs/architecture/p3-rls-premerge.md).
+    MembershipAssignmentBackfill.Apply(db, app.Services.GetRequiredService<TimeProvider>());
 }
 
 // Security response headers on every response. This service serves both the JSON
@@ -1031,11 +1038,12 @@ app.MapPost("/api/gateways/heartbeat", (IControlPlaneStore store, HttpRequest re
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();
-    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    var tenantId = string.IsNullOrEmpty(gatewayId) ? null : store.ValidateDeviceCredential(gatewayId, credential);
+    if (tenantId is null)
     {
         return Results.Unauthorized();
     }
-    store.RecordHeartbeat(gatewayId);
+    store.RecordHeartbeat(tenantId, gatewayId);
     return Results.NoContent();
 });
 
@@ -1046,7 +1054,8 @@ app.MapPost("/api/gateways/telemetry", (GatewayTelemetryRequest body, IControlPl
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();
-    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    var tenantId = string.IsNullOrEmpty(gatewayId) ? null : store.ValidateDeviceCredential(gatewayId, credential);
+    if (tenantId is null)
     {
         return Results.Unauthorized();
     }
@@ -1054,7 +1063,7 @@ app.MapPost("/api/gateways/telemetry", (GatewayTelemetryRequest body, IControlPl
     var telemetry = new GatewayTelemetry(
         Math.Max(0, body.Captured), Math.Max(0, body.Pending),
         Math.Max(0, body.Delivered), Math.Max(0, body.Dead), body.LastCaptureAt);
-    return store.RecordTelemetry(gatewayId, telemetry) ? Results.NoContent() : Results.NotFound();
+    return store.RecordTelemetry(tenantId, gatewayId, telemetry) ? Results.NoContent() : Results.NotFound();
 });
 
 // A gateway fetches its own config, authenticated by its device credential.
@@ -1062,13 +1071,14 @@ app.MapGet("/api/gateways/config", (IControlPlaneStore store, HttpRequest req) =
 {
     var gatewayId = req.Headers["X-Gateway-Id"].ToString();
     var credential = req.Headers["X-Gateway-Credential"].ToString();
-    if (string.IsNullOrEmpty(gatewayId) || !store.ValidateDeviceCredential(gatewayId, credential))
+    var tenantId = string.IsNullOrEmpty(gatewayId) ? null : store.ValidateDeviceCredential(gatewayId, credential);
+    if (tenantId is null)
     {
         return Results.Unauthorized();
     }
     // An authenticated config fetch is also a liveness signal.
-    store.RecordHeartbeat(gatewayId);
-    var config = store.CurrentConfig(gatewayId);
+    store.RecordHeartbeat(tenantId, gatewayId);
+    var config = store.CurrentConfig(tenantId, gatewayId);
     return config is null ? Results.NoContent() : Results.Json(config);
 });
 

@@ -3,6 +3,7 @@ using System;
 using ControlPlane.Api;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace ControlPlane.Api.Migrations
 {
     [DbContext(typeof(AppDbContext))]
-    partial class AppDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260721171544_AddRowLevelSecurity")]
+    partial class AddRowLevelSecurity
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -21,52 +24,6 @@ namespace ControlPlane.Api.Migrations
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
-
-            modelBuilder.Entity("ControlPlane.Api.ApprovalRequestEntity", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset?>("DecidedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("DecidedByUserId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Note")
-                        .HasColumnType("text");
-
-                    b.Property<string>("PermissionKey")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("RequesterUserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("ScopeId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Status")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TargetId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("approval_requests", (string)null);
-                });
 
             modelBuilder.Entity("ControlPlane.Api.AuditEntity", b =>
                 {
@@ -179,37 +136,6 @@ namespace ControlPlane.Api.Migrations
                     b.ToTable("configs", (string)null);
                 });
 
-            modelBuilder.Entity("ControlPlane.Api.CustomRoleEntity", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("CreatedByUserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("RoleKey")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("custom_roles", (string)null);
-                });
-
             modelBuilder.Entity("ControlPlane.Api.DeviceCredentialEntity", b =>
                 {
                     b.Property<string>("GatewayId")
@@ -262,9 +188,6 @@ namespace ControlPlane.Api.Migrations
 
                     b.Property<long>("PendingCount")
                         .HasColumnType("bigint");
-
-                    b.Property<string>("ScopeId")
-                        .HasColumnType("text");
 
                     b.Property<string>("TenantId")
                         .IsRequired()
@@ -357,55 +280,6 @@ namespace ControlPlane.Api.Migrations
                     b.ToTable("memberships", (string)null);
                 });
 
-            modelBuilder.Entity("ControlPlane.Api.PermissionDefinitionEntity", b =>
-                {
-                    b.Property<string>("Key")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Action")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<bool>("Active")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Capability")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<bool>("Delegable")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Description")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Domain")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<bool>("RequiresApproval")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("RequiresFreshAuth")
-                        .HasColumnType("boolean");
-
-                    b.Property<bool>("RequiresMfa")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Resource")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Risk")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Key");
-
-                    b.ToTable("permission_definitions", (string)null);
-                });
-
             modelBuilder.Entity("ControlPlane.Api.RecoveryCodeEntity", b =>
                 {
                     b.Property<string>("Id")
@@ -427,144 +301,6 @@ namespace ControlPlane.Api.Migrations
                     b.HasIndex("UserId");
 
                     b.ToTable("recovery_codes", (string)null);
-                });
-
-            modelBuilder.Entity("ControlPlane.Api.RoleAssignmentEntity", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<DateTimeOffset?>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("GrantedByUserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset?>("RevokedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Role")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("ScopeId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("UserId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ScopeId");
-
-                    b.HasIndex("TenantId");
-
-                    b.HasIndex("UserId");
-
-                    b.ToTable("role_assignments", (string)null);
-                });
-
-            modelBuilder.Entity("ControlPlane.Api.RolePermissionEntity", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<string>("PermissionKey")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("RoleKey")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("role_permissions", (string)null);
-                });
-
-            modelBuilder.Entity("ControlPlane.Api.ScopeEntity", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("ParentId")
-                        .HasColumnType("text");
-
-                    b.Property<string>("Path")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("Type")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("ParentId");
-
-                    b.HasIndex("Path");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("scopes", (string)null);
-                });
-
-            modelBuilder.Entity("ControlPlane.Api.SodRuleEntity", b =>
-                {
-                    b.Property<string>("Id")
-                        .HasColumnType("text");
-
-                    b.Property<bool>("Active")
-                        .HasColumnType("boolean");
-
-                    b.Property<string>("Name")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("PermissionA")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("PermissionB")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("TenantId")
-                        .IsRequired()
-                        .HasColumnType("text");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("TenantId");
-
-                    b.ToTable("sod_rules", (string)null);
                 });
 
             modelBuilder.Entity("ControlPlane.Api.SubscriptionEntity", b =>
@@ -677,14 +413,8 @@ namespace ControlPlane.Api.Migrations
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<DateTimeOffset>("LastAuthenticatedAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<DateTimeOffset>("LastSeenAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<bool>("MfaSatisfied")
-                        .HasColumnType("boolean");
 
                     b.Property<DateTimeOffset?>("RevokedAt")
                         .HasColumnType("timestamp with time zone");

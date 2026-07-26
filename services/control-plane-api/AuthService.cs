@@ -38,8 +38,10 @@ public sealed record SessionView(string Id, DateTimeOffset CreatedAt, DateTimeOf
 /// <summary>Users + sessions over the application database.</summary>
 public sealed class AuthService
 {
-    /// <summary>Audit scope for platform-level (non-tenant) identity events.</summary>
-    public const string PlatformScope = "platform";
+    /// <summary>Sentinel tenant id for platform-level (non-tenant) identity audit
+    /// events in the shared audit table. Under RLS these rows are written with the
+    /// tenant context bound to this value (see AuthScope below).</summary>
+    public const string PlatformAuditTenant = "platform";
 
     private static readonly TimeSpan SessionLifetime = TimeSpan.FromDays(7);
 
@@ -63,7 +65,16 @@ public sealed class AuthService
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
 
     private void Audit(AppDbContext db, string kind, string detail) =>
-        db.Audit.Add(new AuditEntity { At = _clock.GetUtcNow(), Kind = kind, TenantId = PlatformScope, Detail = detail });
+        db.Audit.Add(new AuditEntity { At = _clock.GetUtcNow(), Kind = kind, TenantId = PlatformAuditTenant, Detail = detail });
+
+    // Identity writes touch global (non-tenant) tables, but the audit trail lives
+    // in the RLS-protected `audit` table under the platform sentinel tenant. So any
+    // method that writes (audit or otherwise) opens this scope, which binds
+    // app.tenant_id to the sentinel for the transaction. IMPORTANT: every path that
+    // calls SaveChanges must Complete() the scope, or the transaction rolls back.
+    // Read-only paths and the per-request Authenticate() touch no RLS table and are
+    // deliberately left unscoped.
+    private static TenantScope PlatformAudit(AppDbContext db) => TenantScope.Begin(db, PlatformAuditTenant);
 
     /// <summary>Basic email shape check (full verification is by delivered link).</summary>
     public static bool LooksLikeEmail(string email)
@@ -80,6 +91,7 @@ public sealed class AuthService
     public UserView? CreateUser(string email, string password)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var normalized = NormalizeEmail(email);
         if (db.Users.AsNoTracking().Any(u => u.Email == normalized))
         {
@@ -96,6 +108,7 @@ public sealed class AuthService
         db.Users.Add(user);
         Audit(db, "user.created", user.Id);
         db.SaveChanges();
+        scope.Complete();
         return View(user);
     }
 
@@ -107,12 +120,14 @@ public sealed class AuthService
     public LoginOutcome? Login(string email, string password)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var normalized = NormalizeEmail(email);
         var user = db.Users.FirstOrDefault(u => u.Email == normalized);
         if (user is null || !user.Active)
         {
             Audit(db, "auth.login_failed", "invalid credentials");
             db.SaveChanges();
+            scope.Complete();
             return null;
         }
         var check = _hasher.VerifyHashedPassword(user, user.PasswordHash, password);
@@ -120,6 +135,7 @@ public sealed class AuthService
         {
             Audit(db, "auth.login_failed", "invalid credentials");
             db.SaveChanges();
+            scope.Complete();
             return null;
         }
         if (check == PasswordVerificationResult.SuccessRehashNeeded)
@@ -133,11 +149,13 @@ public sealed class AuthService
             var mfaToken = IssueToken(db, user.Id, "mfa", TimeSpan.FromMinutes(5));
             Audit(db, "auth.mfa_challenged", user.Id);
             db.SaveChanges();
+            scope.Complete();
             return new LoginOutcome(true, mfaToken, null);
         }
 
         var result = CreateSession(db, user, mfaSatisfied: false);
         db.SaveChanges();
+        scope.Complete();
         return new LoginOutcome(false, null, result);
     }
 
@@ -226,6 +244,7 @@ public sealed class AuthService
     public bool RevokeSession(string userId, string sessionId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var session = db.UserSessions.FirstOrDefault(s =>
             s.Id == sessionId && s.UserId == userId && s.RevokedAt == null);
         if (session is null)
@@ -235,6 +254,7 @@ public sealed class AuthService
         session.RevokedAt = _clock.GetUtcNow();
         Audit(db, "auth.logout", userId);
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -242,6 +262,7 @@ public sealed class AuthService
     public int RevokeAllSessions(string userId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var now = _clock.GetUtcNow();
         var sessions = db.UserSessions.Where(s => s.UserId == userId && s.RevokedAt == null).ToList();
         foreach (var s in sessions)
@@ -250,6 +271,7 @@ public sealed class AuthService
         }
         Audit(db, "auth.sessions_revoked", $"{userId} ({sessions.Count})");
         db.SaveChanges();
+        scope.Complete();
         return sessions.Count;
     }
 
@@ -291,6 +313,7 @@ public sealed class AuthService
     public IReadOnlyList<string>? EnableMfa(string userId, string code)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var user = db.Users.FirstOrDefault(u => u.Id == userId && u.Active);
         if (user?.MfaSecret is null || user.MfaEnabledAt is not null ||
             !Totp.Verify(user.MfaSecret, code, _clock.GetUtcNow()))
@@ -312,6 +335,7 @@ public sealed class AuthService
         }
         Audit(db, "auth.mfa_enabled", userId);
         db.SaveChanges();
+        scope.Complete();
         return codes;
     }
 
@@ -319,6 +343,7 @@ public sealed class AuthService
     public bool DisableMfa(string userId, string code)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var user = db.Users.FirstOrDefault(u => u.Id == userId && u.Active);
         if (user?.MfaSecret is null || user.MfaEnabledAt is null ||
             !Totp.Verify(user.MfaSecret, code, _clock.GetUtcNow()))
@@ -330,6 +355,7 @@ public sealed class AuthService
         db.RecoveryCodes.RemoveRange(db.RecoveryCodes.Where(r => r.UserId == userId));
         Audit(db, "auth.mfa_disabled", userId);
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -337,6 +363,7 @@ public sealed class AuthService
     public LoginResult? VerifyMfaLogin(string mfaToken, string code)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var row = ConsumeToken(db, mfaToken, "mfa");
         if (row is null)
         {
@@ -348,10 +375,12 @@ public sealed class AuthService
             // The challenge token is consumed either way: a wrong code sends the
             // caller back through the password step rather than allowing retries.
             db.SaveChanges();
+            scope.Complete();
             return null;
         }
         var result = CreateSession(db, user, mfaSatisfied: true);
         db.SaveChanges();
+        scope.Complete();
         return result;
     }
 
@@ -359,6 +388,7 @@ public sealed class AuthService
     public LoginResult? RecoverMfaLogin(string mfaToken, string recoveryCode)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var row = ConsumeToken(db, mfaToken, "mfa");
         if (row is null)
         {
@@ -370,6 +400,7 @@ public sealed class AuthService
         if (stored is null)
         {
             db.SaveChanges();
+            scope.Complete();
             return null;
         }
         stored.UsedAt = _clock.GetUtcNow();
@@ -377,6 +408,7 @@ public sealed class AuthService
         Audit(db, "auth.mfa_recovery_used", user.Id);
         var result = CreateSession(db, user, mfaSatisfied: true);
         db.SaveChanges();
+        scope.Complete();
         return result;
     }
 
@@ -415,6 +447,7 @@ public sealed class AuthService
     public (string Email, string Token)? IssueVerification(string userId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var user = db.Users.AsNoTracking().FirstOrDefault(u => u.Id == userId && u.Active);
         if (user is null)
         {
@@ -423,6 +456,7 @@ public sealed class AuthService
         var token = IssueToken(db, userId, "verify", TimeSpan.FromHours(24));
         Audit(db, "auth.verification_sent", userId);
         db.SaveChanges();
+        scope.Complete();
         return (user.Email, token);
     }
 
@@ -430,6 +464,7 @@ public sealed class AuthService
     public bool VerifyEmail(string token)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var row = ConsumeToken(db, token, "verify");
         if (row is null)
         {
@@ -439,6 +474,7 @@ public sealed class AuthService
         user.EmailVerifiedAt ??= _clock.GetUtcNow();
         Audit(db, "auth.email_verified", user.Id);
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 
@@ -447,6 +483,7 @@ public sealed class AuthService
     public (string Email, string Token)? IssuePasswordReset(string email)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var user = db.Users.AsNoTracking().FirstOrDefault(u => u.Email == NormalizeEmail(email) && u.Active);
         if (user is null)
         {
@@ -455,6 +492,7 @@ public sealed class AuthService
         var token = IssueToken(db, user.Id, "reset", TimeSpan.FromHours(1));
         Audit(db, "auth.reset_requested", user.Id);
         db.SaveChanges();
+        scope.Complete();
         return (user.Email, token);
     }
 
@@ -462,6 +500,7 @@ public sealed class AuthService
     public bool ResetPassword(string token, string newPassword)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = PlatformAudit(db);
         var row = ConsumeToken(db, token, "reset");
         if (row is null)
         {
@@ -476,6 +515,7 @@ public sealed class AuthService
         }
         Audit(db, "auth.password_reset", user.Id);
         db.SaveChanges();
+        scope.Complete();
         return true;
     }
 }

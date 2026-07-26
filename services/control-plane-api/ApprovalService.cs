@@ -7,8 +7,9 @@
 // is checked separately by the authorization gate, and the action itself is
 // executed by the endpoint once approved.
 //
-// EF-backed like the other P3 services, app-layer tenant-filtered. RLS policies
-// for approval_requests land at the P1+P3 merge.
+// EF-backed like the other P3 services; every method binds the tenant GUC via
+// TenantScope so the approval_requests RLS policy (AddP3RowLevelSecurity) enforces
+// isolation beneath the app-layer filter.
 
 using Microsoft.EntityFrameworkCore;
 
@@ -41,6 +42,7 @@ public sealed class ApprovalService
             return null;
         }
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var entity = new ApprovalRequestEntity
         {
             Id = Ids.New("apr"),
@@ -55,6 +57,7 @@ public sealed class ApprovalService
         };
         db.ApprovalRequests.Add(entity);
         db.SaveChanges();
+        scope.Complete();
         return ToView(entity);
     }
 
@@ -63,8 +66,11 @@ public sealed class ApprovalService
     public ApprovalRequestEntity? Find(string tenantId, string requestId)
     {
         using var db = _factory.CreateDbContext();
-        return db.ApprovalRequests.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var request = db.ApprovalRequests.AsNoTracking()
             .FirstOrDefault(a => a.Id == requestId && a.TenantId == tenantId);
+        scope.Complete();
+        return request;
     }
 
     /// <summary>Approve a pending request. Fails if it is unknown, already decided, or
@@ -81,6 +87,7 @@ public sealed class ApprovalService
         string tenantId, string requestId, string approverUserId, string status, bool enforceDistinct)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var request = db.ApprovalRequests.FirstOrDefault(a => a.Id == requestId && a.TenantId == tenantId);
         if (request is null)
         {
@@ -98,6 +105,7 @@ public sealed class ApprovalService
         request.DecidedByUserId = approverUserId;
         request.DecidedAt = _clock.GetUtcNow();
         db.SaveChanges();
+        scope.Complete();
         return DecideOutcome.Ok;
     }
 
@@ -105,12 +113,15 @@ public sealed class ApprovalService
     public IReadOnlyList<ApprovalRequestView> Pending(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.ApprovalRequests.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var pending = db.ApprovalRequests.AsNoTracking()
             .Where(a => a.TenantId == tenantId && a.Status == ApprovalStatus.Pending)
             .OrderBy(a => a.CreatedAt)
             .AsEnumerable()
             .Select(ToView)
             .ToList();
+        scope.Complete();
+        return pending;
     }
 
     private static ApprovalRequestView ToView(ApprovalRequestEntity a) =>
