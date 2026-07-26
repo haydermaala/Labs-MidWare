@@ -216,9 +216,9 @@ export function PlatformPage(): JSX.Element {
 /** A short chip for pending/approved/rejected/expired status labels. */
 function StatusChip({ status }: { readonly status: string }): JSX.Element {
   const tone =
-    status === 'approved' || status === 'active' ? color.ok
-    : status === 'rejected' || status === 'expired' ? color.danger
-    : color.warn;
+    status === 'approved' || status === 'active' || status === 'trial' ? color.ok
+    : status === 'rejected' || status === 'expired' || status === 'archived' || status === 'offboarding' ? color.danger
+    : color.warn; // pending / suspended / grace / provisioning
   return (
     <span style={{
       display: 'inline-block', padding: `2px ${space[2]}px`, borderRadius: 999,
@@ -287,13 +287,15 @@ function TenantsSection({ tenants, canManage, busy, onProvision, onSuspend, onRe
           </thead>
           <tbody>
             {tenants.map((t) => {
-              const offboarded = 'offboarded' in t && (t as { offboarded?: boolean }).offboarded === true;
-              const label = offboarded ? 'offboarded' : t.active ? 'active' : 'suspended';
+              // Prefer the authoritative lifecycle status (P7); fall back to the legacy
+              // booleans for a client talking to an older server.
+              const status = (t.status ?? (t.offboarded ? 'archived' : t.active ? 'active' : 'suspended')).toLowerCase();
+              const offboarded = status === 'archived' || status === 'offboarding';
               return (
                 <tr key={t.id}>
                   <td style={td}><div style={{ fontWeight: 600 }}>{t.name}</div>
                     <div style={{ fontSize: 11, color: color.fgMuted }} className="lc-tabular">{t.id}</div></td>
-                  <td style={td}>{label}</td>
+                  <td style={td}><StatusChip status={status} /></td>
                   <td style={{ ...td, whiteSpace: 'nowrap' }} className="lc-tabular">{fmtDate(t.createdAt)}</td>
                   {canManage && (
                     <td style={{ ...td, textAlign: 'right' }}>

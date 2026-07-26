@@ -35,7 +35,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         Audit(db, "tenant.created", entity.Id, entity.Name);
         db.SaveChanges();
         scope.Complete();
-        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active, entity.Offboarded);
+        return new Tenant(entity.Id, entity.Name, entity.CreatedAt, entity.Active, entity.Offboarded, entity.Status);
     }
 
     // ── Tenant registry reads ────────────────────────────────────────────────
@@ -51,7 +51,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var scope = PlatformScope.Begin(db);
         var result = db.Tenants.AsNoTracking()
             .OrderBy(t => t.CreatedAt)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded, t.Status))
             .ToList();
         scope.Complete();
         return result;
@@ -72,7 +72,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         using var scope = TenantScope.Begin(db, tenantId);
         var tenant = db.Tenants.AsNoTracking()
             .Where(t => t.Id == tenantId)
-            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded))
+            .Select(t => new Tenant(t.Id, t.Name, t.CreatedAt, t.Active, t.Offboarded, t.Status))
             .FirstOrDefault();
         scope.Complete();
         return tenant;
@@ -91,7 +91,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         Audit(db, "tenant.renamed", tenantId, name);
         db.SaveChanges();
         scope.Complete();
-        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active, tenant.Offboarded);
+        return new Tenant(tenant.Id, tenant.Name, tenant.CreatedAt, tenant.Active, tenant.Offboarded, tenant.Status);
     }
 
     public bool DeactivateTenant(string tenantId) => SetTenantActive(tenantId, active: false);
@@ -115,6 +115,8 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         if (tenant.Active != active)
         {
             tenant.Active = active;
+            // Keep the lifecycle status in step with the boolean mirror.
+            tenant.Status = active ? nameof(TenantStatus.Active) : nameof(TenantStatus.Suspended);
             Audit(db, active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
             db.SaveChanges();
         }
@@ -135,6 +137,7 @@ public sealed class EfControlPlaneStore : IControlPlaneStore
         {
             tenant.Offboarded = true;
             tenant.Active = false;
+            tenant.Status = nameof(TenantStatus.Archived);
             Audit(db, "tenant.offboarded", tenantId, tenant.Name);
             db.SaveChanges();
         }

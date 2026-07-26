@@ -12,6 +12,10 @@ export interface Tenant {
   readonly name: string;
   readonly createdAt: string;
   readonly active: boolean;
+  /** Lifecycle state name (provisioning|trial|active|grace|suspended|offboarding|archived).
+   *  The authoritative axis; `active`/`offboarded` are derived mirrors. */
+  readonly status?: string;
+  readonly offboarded?: boolean;
 }
 
 /** A gateway in the fleet view (no credential; liveness derived server-side). */

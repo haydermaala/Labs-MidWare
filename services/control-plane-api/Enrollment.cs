@@ -15,8 +15,11 @@ using System.Collections.Concurrent;
 namespace ControlPlane.Api;
 
 /// <summary>A tenant (customer/organization). Inactive tenants are retained but
-/// cannot enroll new gateways.</summary>
-public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active, bool Offboarded = false);
+/// cannot enroll new gateways. <paramref name="Status"/> is the lifecycle state name
+/// (<see cref="TenantStatus"/>); Active/Offboarded are derived mirrors of it.</summary>
+public sealed record Tenant(
+    string Id, string Name, DateTimeOffset CreatedAt, bool Active,
+    bool Offboarded = false, string Status = nameof(TenantStatus.Active));
 
 /// <summary>PHI-free operational counters a gateway self-reports. These are
 /// message *counts* and timing only — never any message content or result value.
@@ -132,7 +135,11 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         }
         if (tenant.Active != active)
         {
-            _tenants[tenantId] = tenant with { Active = active };
+            _tenants[tenantId] = tenant with
+            {
+                Active = active,
+                Status = active ? nameof(TenantStatus.Active) : nameof(TenantStatus.Suspended),
+            };
             Audit(active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
         }
         return true;
@@ -148,7 +155,10 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         }
         if (!tenant.Offboarded)
         {
-            _tenants[tenantId] = tenant with { Offboarded = true, Active = false };
+            _tenants[tenantId] = tenant with
+            {
+                Offboarded = true, Active = false, Status = nameof(TenantStatus.Archived),
+            };
             Audit("tenant.offboarded", tenantId, tenant.Name);
         }
         return true;

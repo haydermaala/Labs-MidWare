@@ -108,6 +108,7 @@ public sealed class AppDbContext : DbContext
         {
             e.ToTable("tenants");
             e.HasKey(x => x.Id);
+            e.Property(x => x.Status).HasMaxLength(32).HasDefaultValue(nameof(TenantStatus.Active));
         });
 
         modelBuilder.Entity<GatewayEntity>(e =>
@@ -372,6 +373,11 @@ public sealed class TenantEntity
     /// two-party platform offboarding flow. Data is retained but it can never be
     /// reactivated. Distinct from a (reversible) suspend.</summary>
     public bool Offboarded { get; set; }
+
+    /// <summary>Lifecycle state (P7, <see cref="TenantStatus"/> name). The authoritative
+    /// lifecycle axis; Active/Offboarded are kept as derived mirrors of it for the
+    /// enrollment/billing paths that still read them. Backfilled from those booleans.</summary>
+    public string Status { get; set; } = nameof(TenantStatus.Active);
 }
 
 /// <summary>An enrolled gateway row, scoped to a tenant.</summary>
