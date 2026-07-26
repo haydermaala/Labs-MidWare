@@ -98,4 +98,30 @@ public sealed class TenantLifecycleTests
     [InlineData(false, true, TenantStatus.Archived)]
     public void FromLegacy_Maps_The_Old_Booleans(bool active, bool offboarded, TenantStatus expected) =>
         Assert.Equal(expected, TenantLifecycle.FromLegacy(active, offboarded));
+
+    [Theory]
+    [InlineData(SubscriptionStatus.PastDue, TenantLifecycleOperation.EnterGrace)]
+    [InlineData(SubscriptionStatus.Active, TenantLifecycleOperation.Activate)]
+    [InlineData(SubscriptionStatus.Trialing, TenantLifecycleOperation.Activate)]
+    public void BillingLifecycle_Maps_Status_To_Operation(string status, TenantLifecycleOperation expected) =>
+        Assert.Equal(expected, BillingLifecycle.OperationFor(status));
+
+    [Theory]
+    [InlineData(SubscriptionStatus.Canceled)] // §12: cancellation does NOT auto-suspend
+    [InlineData("something_else")]
+    public void BillingLifecycle_Does_Not_Drive_On_Other_Statuses(string status) =>
+        Assert.Null(BillingLifecycle.OperationFor(status));
+
+    [Fact]
+    public void PastDue_Enters_Grace_And_Recovery_Returns_To_Active()
+    {
+        var store = new InMemoryControlPlaneStore(TimeProvider.System);
+        var t = store.CreateTenant("Billing Co"); // starts Active
+
+        store.TransitionTenant(t.Id, BillingLifecycle.OperationFor(SubscriptionStatus.PastDue)!.Value);
+        Assert.Equal(nameof(TenantStatus.Grace), store.FindTenant(t.Id)!.Status);
+
+        store.TransitionTenant(t.Id, BillingLifecycle.OperationFor(SubscriptionStatus.Active)!.Value);
+        Assert.Equal(nameof(TenantStatus.Active), store.FindTenant(t.Id)!.Status);
+    }
 }

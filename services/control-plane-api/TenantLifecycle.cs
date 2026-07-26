@@ -85,6 +85,24 @@ public enum TenantTransitionOutcome
     LegalHold,
 }
 
+/// <summary>Maps a billing subscription status to the lifecycle operation billing should
+/// drive (prompt §12): a past-due subscription enters the grace window; a healthy
+/// (active/trialing) subscription recovers to active. Cancellation does NOT auto-suspend
+/// — §12 forbids punishing data on downgrade; that is an administrative decision. The
+/// transitions are guarded, so a status that does not apply from the tenant's current
+/// state is simply a no-op.</summary>
+public static class BillingLifecycle
+{
+    /// <summary>The operation to apply for a subscription status, or null when billing
+    /// should not touch the lifecycle.</summary>
+    public static TenantLifecycleOperation? OperationFor(string subscriptionStatus) => subscriptionStatus switch
+    {
+        SubscriptionStatus.PastDue => TenantLifecycleOperation.EnterGrace,
+        SubscriptionStatus.Active or SubscriptionStatus.Trialing => TenantLifecycleOperation.Activate,
+        _ => null,
+    };
+}
+
 /// <summary>Offboarding retention policy (prompt §10.3): a tenant does not hard-archive
 /// immediately — a cooling-off window must elapse first, during which offboarding can be
 /// cancelled, and a legal hold overrides archiving entirely.</summary>

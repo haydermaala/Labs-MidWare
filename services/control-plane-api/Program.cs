@@ -746,8 +746,14 @@ app.MapPost("/api/platform/tenants/{tenantId}/subscription",
     if (PlatformForbidden(req, auth, PlatformPermissions.SubscriptionManage) is { } denied) return denied;
     if (!store.TenantExists(tenantId)) return Results.NotFound();
     if (body.PlanId is null || !Plans.IsKnown(body.PlanId)) return Results.BadRequest(new { error = "unknown plan" });
-    billing.UpsertSubscription(tenantId, body.PlanId, body.Status ?? SubscriptionStatus.Active,
+    var status = body.Status ?? SubscriptionStatus.Active;
+    billing.UpsertSubscription(tenantId, body.PlanId, status,
         null, null, authzClock.GetUtcNow().AddDays(30), false);
+    // Let billing drive the lifecycle: past-due → grace, healthy → recover (guarded no-op otherwise).
+    if (BillingLifecycle.OperationFor(status) is { } op)
+    {
+        store.TransitionTenant(tenantId, op);
+    }
     return Results.Json(billing.EntitlementsFor(tenantId));
 });
 
@@ -1344,7 +1350,7 @@ app.MapPost("/api/tenants/{tenantId}/billing/portal",
 // provider's signature verification. Applied exactly once (idempotent + replay-
 // safe via the billing_events unique index). Always 200 on a valid signature so
 // the provider does not retry a duplicate we intentionally ignored.
-app.MapPost("/api/billing/webhook", async (IBillingProvider provider, BillingService billing, HttpRequest req) =>
+app.MapPost("/api/billing/webhook", async (IBillingProvider provider, BillingService billing, IControlPlaneStore store, HttpRequest req) =>
 {
     using var reader = new StreamReader(req.Body);
     var payload = await reader.ReadToEndAsync();
@@ -1357,6 +1363,12 @@ app.MapPost("/api/billing/webhook", async (IBillingProvider provider, BillingSer
         return Results.StatusCode(StatusCodes.Status400BadRequest);
     }
     var applied = billing.TryApplyProviderEvent(ev);
+    // Only drive the lifecycle when this call actually applied the event (not a replay),
+    // so a duplicate delivery can't re-trigger a grace/recover transition.
+    if (applied && BillingLifecycle.OperationFor(ev.Status) is { } op)
+    {
+        store.TransitionTenant(ev.TenantId, op);
+    }
     return Results.Json(new { applied });
 });
 
