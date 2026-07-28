@@ -143,35 +143,62 @@ role is) with no tenant context also sees **zero rows**. Repointing `DATABASE_UR
 to that owner therefore does **not** restore access on its own. Only a **superuser**
 or a `BYPASSRLS` role is exempt from `FORCE`.
 
-Fastest reliable rollback — run the migration's `Down()` as the owner (via
-`MIGRATION_DATABASE_URL`), which per tenant table drops the policy and does
-`NO FORCE` + `DISABLE ROW LEVEL SECURITY`:
+> ### ⛔ DO NOT roll back with `dotnet ef database update`
+>
+> An earlier version of this runbook told you to run
+> `dotnet ef database update <migration-before-AddRowLevelSecurity>`. **That command
+> is destructive and must not be used.** `AddRowLevelSecurity` is migration 11 of 27;
+> reverting to before it runs the `Down()` of **every migration after it**, which
+> **DROPS** the P2–P7 tables and all their data — permission definitions, scopes, role
+> assignments, custom roles, SoD rules, approval requests, every platform table
+> (roles, support grants, security events, offboard requests), plus the session
+> step-up and tenant-lifecycle columns.
+>
+> Rolling back RLS **never requires reverting a migration.** RLS is enforced by table
+> attributes and policies, which you relax in place with the SQL below. Use that.
 
-```bash
-# as the owner / migration role
-dotnet ef database update <migration-before-AddRowLevelSecurity> \
-  --connection "$MIGRATION_DATABASE_URL"
-```
-
-Or, to un-gate immediately without a migration step, as the owner:
+**The un-gate is the rollback.** As the owner (`MIGRATION_DATABASE_URL`), relax
+enforcement in place — no migration step, no schema change, no data touched:
 
 ```sql
--- per tenant table (gateways, bootstrap_tokens, configs, audit, memberships,
--- invitations, subscriptions, billing_events, device_credentials, tenants):
-ALTER TABLE gateways NO FORCE ROW LEVEL SECURITY;   -- owner is now exempt, OR
-ALTER TABLE gateways DISABLE ROW LEVEL SECURITY;    -- no role is subject
+-- ALL 16 FORCE'd tenant tables (P1's 10 + P3's 6). Verified against the live
+-- schema: SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+-- WHERE n.nspname='public' AND c.relforcerowsecurity;
+ALTER TABLE approval_requests  NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE audit              NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE billing_events     NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE bootstrap_tokens   NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE configs            NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE custom_roles       NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE device_credentials NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE gateways           NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE invitations        NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE memberships        NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE role_assignments   NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE role_permissions   NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE scopes             NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE sod_rules          NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE subscriptions      NO FORCE ROW LEVEL SECURITY;
+ALTER TABLE tenants            NO FORCE ROW LEVEL SECURITY;
 ```
 
-After `NO FORCE`, repointing `DATABASE_URL` to the owner restores access (owner
-exempt when not forced) — verified: the owner then reads all rows. `DISABLE`
-restores access for the runtime role directly.
+`NO FORCE` exempts the **owner** only, so it must be paired with repointing
+`DATABASE_URL` to the owner. To restore access for the **runtime** role without
+repointing, use `DISABLE ROW LEVEL SECURITY` on the same 16 tables instead — that
+exempts every role.
+
+**Partial rollback is worse than none.** Un-gating only P1's 10 tables leaves the 6
+P3 tables (`scopes`, `role_assignments`, `sod_rules`, `custom_roles`,
+`role_permissions`, `approval_requests`) still fail-closed. Sign-in and the fleet
+appear to recover, so the incident looks resolved — but `ScopeService.Tree()` returns
+null and scoped authorization silently degrades. **Always run all 16.**
 
 Then, if the app itself must be reverted, redeploy the prior `main` (pre-merge).
 
-The rollback touches **no data** — it only relaxes policy enforcement — and is why
-the owner (`MIGRATION_DATABASE_URL`) connection is retained. (If your provider hands
-you a genuine **superuser** rather than a plain owner, repointing `DATABASE_URL` to
-it *does* restore access immediately, since superusers bypass `FORCE` — also
+The rollback above touches **no data** — it only relaxes policy enforcement — and is
+why the owner (`MIGRATION_DATABASE_URL`) connection is retained. (If your provider
+hands you a genuine **superuser** rather than a plain owner, repointing `DATABASE_URL`
+to it *does* restore access immediately, since superusers bypass `FORCE` — also
 verified — but do not run production on a superuser afterwards.)
 
 ## Post-cutover

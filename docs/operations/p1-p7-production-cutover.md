@@ -66,8 +66,36 @@ Everything in [rls-rollout.md §Preconditions](./rls-rollout.md#preconditions), 
 
 Deploy the tip branch (`feat/p7-tenant-lifecycle`) to staging with the runtime on
 `app_runtime` and `MIGRATION_DATABASE_URL` on the owner. Then exercise every surface
-that RLS + the new engines gate — an unauthenticated smoke is not enough. Use
-[rls-staging-smoke.md](./rls-staging-smoke.md) §1–§5 for the tenant-isolation checks,
+that RLS + the new engines gate — an unauthenticated smoke is not enough.
+
+> ### ⚠️ An API-level cross-tenant check does NOT prove RLS
+>
+> Reading `/api/tenants/{A}/…` and `/api/tenants/{B}/…` and observing that each only
+> returns its own rows proves the **application-layer filter** (`Where(TenantId == x)`),
+> **not** RLS. That test passes identically with RLS disabled, so it cannot distinguish
+> working isolation from none at all.
+>
+> **Prove RLS at the database layer, connected as `app_runtime`** (verify first that it
+> reports `rolsuper = f` and `rolbypassrls = f`):
+>
+> ```sql
+> -- must be 0: no tenant GUC bound ⇒ fail-closed
+> SELECT count(*) FROM gateways;
+> -- must be > 0: bound to a tenant that has gateways
+> SELECT set_config('app.tenant_id','<tenant-A>',false);
+> SELECT count(*) FROM gateways;
+> -- must be 0: bound to A, B's rows are invisible
+> SELECT count(*) FROM gateways WHERE "TenantId"='<tenant-B>';
+> -- must be 0: a P3 table, proving the second RLS migration took effect
+> SELECT set_config('app.tenant_id','',false);
+> SELECT count(*) FROM scopes;
+> ```
+>
+> Likewise, **a 2xx from a write path does not prove the write persisted** — an
+> RLS-blocked `UPDATE` affects 0 rows and still returns success. After a heartbeat,
+> confirm `gateways."LastSeenAt"` actually changed.
+
+Use [rls-staging-smoke.md](./rls-staging-smoke.md) §1–§5 for the tenant-isolation checks,
 and add these P2–P7 checks (the operator runs them; the harness cannot hold the admin
 token):
 
@@ -140,14 +168,20 @@ Only once a Root Owner is proven:
 
 ## Rollback
 
-Use [rls-rollout.md §Rollback](./rls-rollout.md#rollback) verbatim — the mechanics are
-identical, just across both RLS migrations. Key facts, restated so they're not missed:
+Use [rls-rollout.md §Rollback](./rls-rollout.md#rollback) verbatim. Key facts, restated
+so they're not missed under pressure:
 
+- ⛔ **Never roll back with `dotnet ef database update <earlier-migration>`.**
+  `AddRowLevelSecurity` is migration 11 of 27, so reverting past it **drops the P2–P7
+  tables and all their data**. Rolling back RLS never requires reverting a migration.
 - `FORCE ROW LEVEL SECURITY` subjects a **non-superuser owner** to policies too, so
-  "just repoint `DATABASE_URL` to the owner" does **not** restore access. Un-gate with
-  `ALTER TABLE … NO FORCE` (owner then exempt) or `DISABLE ROW LEVEL SECURITY`, or run
-  the migration `Down()` as the owner.
-- Rollback touches **no data** — it only relaxes policy enforcement.
+  "just repoint `DATABASE_URL` to the owner" does **not** restore access on its own.
+- Un-gate in place with `ALTER TABLE … NO FORCE` (owner exempt — pair with repointing
+  `DATABASE_URL` to the owner) or `DISABLE ROW LEVEL SECURITY` (every role exempt).
+- **Run all 16 FORCE'd tables, not just P1's 10.** Un-gating only P1 leaves the 6 P3
+  tables fail-closed: sign-in and the fleet recover so the incident looks resolved,
+  while scoped authorization silently degrades. The full list is in rls-rollout.md.
+- Done this way, rollback touches **no data** — it only relaxes policy enforcement.
 - If reverting the app, redeploy the prior `main` (pre-merge).
 
 ## Post-cutover
