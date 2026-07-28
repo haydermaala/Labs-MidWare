@@ -114,6 +114,57 @@ public sealed class SecurityRegressionTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task A_ReadOnly_Platform_Role_Is_Refused_Every_Mutating_Platform_Action()
+    {
+        // Least-privilege regression across the P6/P7 platform surface: a platform
+        // AUDITOR (read-only) is a platform user, so it is NOT anti-enum 401'd — but it
+        // must be 403'd on every action it lacks the specific permission for. Authorization
+        // runs before any tenant lookup, so a probe id is fine (the denial precedes it).
+        var (audId, audSession) = await NewUser("sec-lp-auditor@example.test");
+        await Admin().PostAsJsonAsync("/api/platform/role-assignments",
+            new { userId = audId, role = PlatformRoles.Auditor });
+        var auditor = Session(audSession);
+
+        // Reads the Auditor IS entitled to → 200 (proves it really is a platform user).
+        Assert.Equal(HttpStatusCode.OK, (await auditor.GetAsync("/api/platform/tenants")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK, (await auditor.GetAsync("/api/platform/security-events")).StatusCode);
+
+        // Every mutating platform action → 403 (has a platform role, lacks THIS permission).
+        var forbidden = new (string Method, string Path)[]
+        {
+            ("POST", "/api/platform/tenants"),                              // TenantProvision
+            ("POST", "/api/platform/tenants/probe/suspend"),               // TenantSuspend
+            ("POST", "/api/platform/tenants/probe/reactivate"),           // TenantSuspend
+            ("POST", "/api/platform/tenants/probe/archive"),              // TenantOffboard
+            ("POST", "/api/platform/tenants/probe/cancel-offboarding"),   // TenantOffboard
+            ("POST", "/api/platform/tenants/probe/legal-hold"),           // TenantOffboard
+            ("GET",  "/api/platform/tenants/probe/export"),               // TenantExport
+            ("POST", "/api/platform/tenants/probe/subscription"),         // SubscriptionManage
+            ("POST", "/api/platform/offboard-requests"),                   // TenantOffboard
+            ("POST", "/api/platform/support-grants"),                      // SupportRequest
+            ("POST", "/api/platform/role-assignments"),                    // RoleManage
+        };
+
+        var leaks = new List<string>();
+        foreach (var (method, path) in forbidden)
+        {
+            var req = new HttpRequestMessage(new HttpMethod(method), path);
+            if (method == "POST")
+            {
+                req.Content = JsonContent.Create(new { });
+            }
+            var res = await auditor.SendAsync(req);
+            if (res.StatusCode != HttpStatusCode.Forbidden)
+            {
+                leaks.Add($"{method} {path} -> {(int)res.StatusCode} (expected 403)");
+            }
+        }
+
+        Assert.True(leaks.Count == 0,
+            "a read-only auditor was NOT refused a mutating platform action:\n  " + string.Join("\n  ", leaks));
+    }
+
+    [Fact]
     public async Task All_Platform_Tables_Are_Global_Not_Tenant_Scoped()
     {
         // A structural guard complementing RlsCoverageTests: no platform_* table may
