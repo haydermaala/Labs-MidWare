@@ -110,12 +110,21 @@ In the maintenance window, following [rls-rollout.md Step 5](./rls-rollout.md#st
 Until now the single god-mode `ControlPlane__AdminToken` is the only platform access.
 Before you can retire it you must mint a real Root Owner:
 
-1. [ ] With the admin token, grant `platform-root-owner` to a **named, MFA-enrolled**
-       operator account: `POST /api/platform/role-assignments` `{ userId, role:
-       "platform-root-owner" }`.
-2. [ ] Sign in as that operator, enrol MFA, and confirm `/platform` shows the full
-       console and `GET /api/platform/whoami` returns the role.
-3. [ ] Verify a Root-Owner-only action (grant another platform role) works end to end
+> **Enrol MFA *before* granting the role — verified in an end-to-end run.** Root Owner
+> is **break-glass**: it requires MFA for **every** permission, including Low-risk
+> *reads*. A session for a user with no MFA enrolled can never satisfy that gate (the
+> server only marks a session MFA-satisfied for enrolled users), so the console has
+> **no data at all** for them. The console now explains this and links to enrolment
+> rather than showing empty sections, but the operational order still matters.
+
+1. [ ] On the named operator account, **enrol MFA first** (Security page), then sign
+       out and back in so the session is MFA-satisfied.
+2. [ ] With the admin token, grant `platform-root-owner` to that account:
+       `POST /api/platform/role-assignments` `{ userId, role: "platform-root-owner" }`.
+3. [ ] Sign in as that operator and confirm `/platform` shows the full console (Overview
+       populated, tenants listed — **not** an "additional verification required" banner)
+       and `GET /api/platform/whoami` returns the role.
+4. [ ] Verify a Root-Owner-only action (grant another platform role) works end to end
        with step-up.
 
 ## Step D — Retire the god-mode token (deliberate, after Step C)
