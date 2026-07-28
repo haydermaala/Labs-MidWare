@@ -138,10 +138,32 @@ RLS problems in production → restore access fast, no data change. **Read this
 carefully — the naive "just repoint to the owner" does not work under `FORCE`.**
 
 Verified against `postgres:16`: `FORCE ROW LEVEL SECURITY` subjects the table
-**owner** to the policies too, so a **non-superuser owner** (what Railway's managed
-role is) with no tenant context also sees **zero rows**. Repointing `DATABASE_URL`
-to that owner therefore does **not** restore access on its own. Only a **superuser**
-or a `BYPASSRLS` role is exempt from `FORCE`.
+**owner** to the policies too, so a **non-superuser owner** with no tenant context
+also sees **zero rows**. Only a **superuser** or a `BYPASSRLS` role is exempt from
+`FORCE`.
+
+> ### ✅ On THIS deployment the fastest rollback is a single env-var change
+>
+> Measured on Railway staging (2026-07-28): the managed `postgres` role that owns all
+> 26 tables reports **`rolsuper = t` and `rolbypassrls = t`** — it is a genuine
+> superuser, not a plain owner. **Superusers bypass `FORCE` entirely**, so:
+>
+> **Repointing `DATABASE_URL` from `app_runtime` back to the owner restores access
+> immediately, with no SQL at all.** That is one variable change and a restart — far
+> faster and less error-prone at 2am than 16 `ALTER TABLE` statements.
+>
+> Confirm the assumption still holds before relying on it (providers change managed
+> roles):
+>
+> ```sql
+> SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user;
+> ```
+>
+> If that ever returns `f`/`f`, fall back to the in-place un-gate below. Keep the
+> un-gate documented regardless: it is the correct procedure for a non-superuser
+> owner, and it is what you need if you must restore access **for the runtime role**
+> without repointing at all. Do not *run* production on the superuser afterwards —
+> repoint back to `app_runtime` once the incident is resolved.
 
 > ### ⛔ DO NOT roll back with `dotnet ef database update`
 >

@@ -171,6 +171,12 @@ Only once a Root Owner is proven:
 Use [rls-rollout.md §Rollback](./rls-rollout.md#rollback) verbatim. Key facts, restated
 so they're not missed under pressure:
 
+- ✅ **Fastest path on this deployment: repoint `DATABASE_URL` back to the owner.**
+  Railway's managed `postgres` role owns the tables and is a genuine **superuser**
+  (`rolsuper=t`, `rolbypassrls=t`, measured on staging 2026-07-28), and superusers
+  bypass `FORCE` — so that single variable change restores access with no SQL.
+  Re-check `SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname=current_user;`
+  before relying on it, and repoint back to `app_runtime` after the incident.
 - ⛔ **Never roll back with `dotnet ef database update <earlier-migration>`.**
   `AddRowLevelSecurity` is migration 11 of 27, so reverting past it **drops the P2–P7
   tables and all their data**. Rolling back RLS never requires reverting a migration.
