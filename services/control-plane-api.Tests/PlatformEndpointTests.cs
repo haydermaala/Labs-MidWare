@@ -308,6 +308,33 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
             "/api/platform/tenants/ten_ghost/legal-hold", new { hold = true })).StatusCode);
     }
 
+    private sealed record StepUpDto(string Error, bool StepUp);
+
+    [Fact]
+    public async Task Break_Glass_Root_Owner_Without_Mfa_Is_Denied_With_A_StepUp_Signal_Even_On_Reads()
+    {
+        // Break-glass: the Root Owner requires MFA for EVERY permission, including a
+        // Low-risk read. The denial must carry stepUp:true so a client can tell
+        // "assurance missing" apart from "no data" — a console that treats this as an
+        // empty list shows a misleading "0 tenants" to an operator who is simply
+        // under-assured. (Regression for that exact console bug.)
+        var (rootId, rootSession) = await NewUser("plat-breakglass@example.test");
+        await GrantPlatformRole(rootId, PlatformRoles.RootOwner);
+
+        var res = await Session(rootSession).GetAsync("/api/platform/tenants");
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
+        var body = (await res.Content.ReadFromJsonAsync<StepUpDto>())!;
+        Assert.True(body.StepUp);
+        Assert.Contains("MFA", body.Error, StringComparison.OrdinalIgnoreCase);
+
+        // A NON-break-glass platform role reads the same endpoint fine without MFA —
+        // proving the gate is specific to break-glass, not a blanket denial.
+        var (audId, audSession) = await NewUser("plat-breakglass-aud@example.test");
+        await GrantPlatformRole(audId, PlatformRoles.Auditor);
+        Assert.Equal(HttpStatusCode.OK,
+            (await Session(audSession).GetAsync("/api/platform/tenants")).StatusCode);
+    }
+
     [Fact]
     public async Task Whoami_Reports_The_Callers_Platform_Roles()
     {

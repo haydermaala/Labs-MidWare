@@ -6,6 +6,7 @@
 // reasons and prompts for step-up (MFA / fresh re-auth) when the server requires it.
 
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import {
   approveOffboard, approveSupportGrant, archiveTenant, cancelTenantOffboarding, exportTenant, grantPlatformRole,
   listOffboardRequests, listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents,
@@ -50,7 +51,7 @@ const td: React.CSSProperties = {
 };
 
 export function PlatformPage(): JSX.Element {
-  const { token } = useAuth();
+  const { token, user } = useAuth();
   const { guard } = useStepUp();
   const platform = usePlatformRoles();
   const isRoot = platform.has('platform-root-owner');
@@ -63,6 +64,7 @@ export function PlatformPage(): JSX.Element {
   const canManageSubscription = isRoot || platform.has('platform-billing-admin');
 
   const [overview, setOverview] = useState<PlatformOverview | null>(null);
+  const [needsStepUp, setNeedsStepUp] = useState(false);
   const [assignments, setAssignments] = useState<readonly PlatformRoleAssignment[]>([]);
   const [tenants, setTenants] = useState<readonly Tenant[]>([]);
   const [supportGrants, setSupportGrants] = useState<readonly PlatformSupportGrant[]>([]);
@@ -77,15 +79,29 @@ export function PlatformPage(): JSX.Element {
     }
     const o = opts(token);
     // Each read is gated by its own permission; a role that lacks one just gets an
-    // empty section rather than failing the whole page.
+    // empty section rather than failing the whole page. A step-up denial is DIFFERENT
+    // — the data exists but assurance is missing — so it must never render as a silent
+    // empty state (an operator would read "0 tenants" as "there are no tenants").
+    let stepUp = false;
+    const read = async <T,>(p: Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return await p;
+      } catch (e) {
+        if ((e as { requiresStepUp?: boolean }).requiresStepUp === true) {
+          stepUp = true;
+        }
+        return fallback;
+      }
+    };
     const [ov, a, t, s, ob, ev] = await Promise.all([
-      platformOverview(o).catch(() => null),
-      canManageRoles ? listPlatformRoleAssignments(o).catch(() => []) : Promise.resolve([]),
-      listPlatformTenants(o).catch(() => []),
-      canApproveSupport ? listSupportGrants(o).catch(() => []) : Promise.resolve([]),
-      canOffboard ? listOffboardRequests(o).catch(() => []) : Promise.resolve([]),
-      canReadSecurity ? listSecurityEvents(o, 50).catch(() => []) : Promise.resolve([]),
+      read(platformOverview(o), null as PlatformOverview | null),
+      canManageRoles ? read(listPlatformRoleAssignments(o), [] as readonly PlatformRoleAssignment[]) : Promise.resolve([]),
+      read(listPlatformTenants(o), [] as readonly Tenant[]),
+      canApproveSupport ? read(listSupportGrants(o), [] as readonly PlatformSupportGrant[]) : Promise.resolve([]),
+      canOffboard ? read(listOffboardRequests(o), [] as readonly PlatformOffboardRequest[]) : Promise.resolve([]),
+      canReadSecurity ? read(listSecurityEvents(o, 50), [] as readonly PlatformSecurityEvent[]) : Promise.resolve([]),
     ]);
+    setNeedsStepUp(stepUp);
     setOverview(ov);
     setAssignments(a);
     setTenants(t);
@@ -150,6 +166,14 @@ export function PlatformPage(): JSX.Element {
           color: color.danger, border: `1px solid ${color.danger}`,
           background: 'color-mix(in oklch, var(--lc-danger) 8%, transparent)', fontSize: fontSize.body,
         }}>{notice}</p>
+      )}
+
+      {needsStepUp && (
+        <StepUpRequiredBanner
+          mfaEnrolled={user?.mfaEnabled === true}
+          busy={busy === 'verify'}
+          onVerify={() => run('verify', async () => { await platformOverview(opts(token!)); })}
+        />
       )}
 
       <div style={{ display: 'grid', gap: space[5] }}>
@@ -271,6 +295,39 @@ function TenantSelect({ id, tenants, value, onChange }: {
         <option value="" disabled>Select a tenant…</option>
         {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
       </select>
+    </div>
+  );
+}
+
+/**
+ * Shown when a platform read was denied for missing assurance rather than missing data.
+ * Two genuinely different cases, and conflating them strands the operator:
+ *  - MFA enrolled → the session just needs a step-up; verifying resolves it.
+ *  - MFA NOT enrolled → step-up can never satisfy an MFA gate (the server only marks a
+ *    session MFA-satisfied for enrolled users), so the only way forward is to enrol.
+ * Break-glass roles (Root Owner) require MFA for EVERY permission, including reads.
+ */
+function StepUpRequiredBanner({ mfaEnrolled, busy, onVerify }: {
+  readonly mfaEnrolled: boolean;
+  readonly busy: boolean;
+  readonly onVerify: () => void;
+}): JSX.Element {
+  return (
+    <div role="alert" style={{
+      margin: `0 0 ${space[4]}px`, padding: space[4], borderRadius: 6,
+      border: `1px solid ${color.warn}`, background: 'color-mix(in oklch, var(--lc-warn) 8%, transparent)',
+      display: 'flex', gap: space[3], alignItems: 'center', flexWrap: 'wrap',
+    }}>
+      <div style={{ flex: '1 1 320px', fontSize: fontSize.body }}>
+        <strong>Additional verification required.</strong>{' '}
+        {mfaEnrolled
+          ? 'Some platform data is hidden until you re-verify your identity. Sections may appear empty until then.'
+          : 'Your platform role requires multi-factor authentication, which is not enrolled on this account. '
+            + 'Platform data stays hidden — including counts, which will read as zero — until you enrol MFA from the Security page.'}
+      </div>
+      {mfaEnrolled
+        ? <Button loading={busy} onClick={onVerify}>Verify identity</Button>
+        : <Link to="/security" className="lc-btn lc-btn--primary">Enrol MFA</Link>}
     </div>
   );
 }
