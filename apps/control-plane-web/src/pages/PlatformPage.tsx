@@ -9,11 +9,11 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   approveOffboard, approveSupportGrant, archiveTenant, cancelTenantOffboarding, exportTenant, grantPlatformRole,
   listOffboardRequests, listPlatformRoleAssignments, listPlatformTenants, listSecurityEvents,
-  listSupportGrants, provisionTenant, reactivatePlatformTenant, rejectOffboard, rejectSupportGrant,
-  requestOffboard, requestSupportGrant, revokePlatformRole, setTenantLegalHold,
+  listSupportGrants, platformOverview, provisionTenant, reactivatePlatformTenant, rejectOffboard,
+  rejectSupportGrant, requestOffboard, requestSupportGrant, revokePlatformRole, setTenantLegalHold,
   setTenantSubscription, suspendTenant,
-  type ControlPlaneOptions, type PlatformOffboardRequest, type PlatformRoleAssignment,
-  type PlatformSecurityEvent, type PlatformSupportGrant, type Tenant,
+  type ControlPlaneOptions, type PlatformOffboardRequest, type PlatformOverview,
+  type PlatformRoleAssignment, type PlatformSecurityEvent, type PlatformSupportGrant, type Tenant,
 } from '@lab-connect/api-client';
 import { Button, Field, color, fontSize, space } from '@lab-connect/ui';
 import { API_BASE } from '../config';
@@ -62,6 +62,7 @@ export function PlatformPage(): JSX.Element {
   const canReadSecurity = isRoot || platform.has('platform-security-admin') || platform.has('platform-auditor');
   const canManageSubscription = isRoot || platform.has('platform-billing-admin');
 
+  const [overview, setOverview] = useState<PlatformOverview | null>(null);
   const [assignments, setAssignments] = useState<readonly PlatformRoleAssignment[]>([]);
   const [tenants, setTenants] = useState<readonly Tenant[]>([]);
   const [supportGrants, setSupportGrants] = useState<readonly PlatformSupportGrant[]>([]);
@@ -77,13 +78,15 @@ export function PlatformPage(): JSX.Element {
     const o = opts(token);
     // Each read is gated by its own permission; a role that lacks one just gets an
     // empty section rather than failing the whole page.
-    const [a, t, s, ob, ev] = await Promise.all([
+    const [ov, a, t, s, ob, ev] = await Promise.all([
+      platformOverview(o).catch(() => null),
       canManageRoles ? listPlatformRoleAssignments(o).catch(() => []) : Promise.resolve([]),
       listPlatformTenants(o).catch(() => []),
       canApproveSupport ? listSupportGrants(o).catch(() => []) : Promise.resolve([]),
       canOffboard ? listOffboardRequests(o).catch(() => []) : Promise.resolve([]),
       canReadSecurity ? listSecurityEvents(o, 50).catch(() => []) : Promise.resolve([]),
     ]);
+    setOverview(ov);
     setAssignments(a);
     setTenants(t);
     setSupportGrants(s);
@@ -150,6 +153,8 @@ export function PlatformPage(): JSX.Element {
       )}
 
       <div style={{ display: 'grid', gap: space[5] }}>
+        {overview !== null && <OverviewSection overview={overview} />}
+
         <TenantsSection
           tenants={tenants}
           canManage={canManageTenants}
@@ -270,6 +275,53 @@ function TenantSelect({ id, tenants, value, onChange }: {
   );
 }
 
+/** A labelled count "pill" — a status chip or plan name with its tally. */
+function CountPill({ label, n, chip }: { readonly label: string; readonly n: number; readonly chip?: boolean }): JSX.Element {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: space[2] }}>
+      {chip ? <StatusChip status={label} /> : <span style={{ fontSize: fontSize.meta, fontWeight: 600 }}>{label}</span>}
+      <span style={{ fontSize: fontSize.meta, color: color.fgMuted }} className="lc-tabular">{n}</span>
+    </span>
+  );
+}
+
+/** §13.1 overview: total tenants, payment health, and counts by lifecycle state + plan. */
+function OverviewSection({ overview }: { readonly overview: PlatformOverview }): JSX.Element {
+  const byStatus = Object.entries(overview.tenantsByStatus).sort((a, b) => a[0].localeCompare(b[0]));
+  const byPlan = Object.entries(overview.tenantsByPlan).sort((a, b) => a[0].localeCompare(b[0]));
+  return (
+    <section style={{ display: 'grid', gap: space[3] }}>
+      <h2 style={{ fontSize: fontSize.section, fontWeight: 600 }}>Overview</h2>
+      <div style={{ display: 'flex', gap: space[3], flexWrap: 'wrap' }}>
+        <div className="lc-card" style={{ padding: space[4], minWidth: 140 }}>
+          <div style={{ fontSize: fontSize.meta, color: color.fgMuted }}>Tenants</div>
+          <div style={{ fontSize: fontSize.title, fontWeight: 700 }} className="lc-tabular">{overview.totalTenants}</div>
+        </div>
+        <div className="lc-card" style={{ padding: space[4], minWidth: 140 }}>
+          <div style={{ fontSize: fontSize.meta, color: color.fgMuted }}>Past due</div>
+          <div style={{ fontSize: fontSize.title, fontWeight: 700,
+            color: overview.pastDueCount > 0 ? color.danger : color.fg }} className="lc-tabular">
+            {overview.pastDueCount}</div>
+        </div>
+        <div className="lc-card" style={{ padding: space[4], flex: '1 1 200px', display: 'grid', gap: space[2] }}>
+          <div style={{ fontSize: fontSize.meta, color: color.fgMuted }}>By lifecycle state</div>
+          <div style={{ display: 'flex', gap: space[3], flexWrap: 'wrap' }}>
+            {byStatus.length === 0 ? <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>—</span>
+              : byStatus.map(([s, n]) => <CountPill key={s} label={s.toLowerCase()} n={n} chip />)}
+          </div>
+        </div>
+        <div className="lc-card" style={{ padding: space[4], flex: '1 1 200px', display: 'grid', gap: space[2] }}>
+          <div style={{ fontSize: fontSize.meta, color: color.fgMuted }}>By plan</div>
+          <div style={{ display: 'flex', gap: space[3], flexWrap: 'wrap' }}>
+            {byPlan.length === 0 ? <span style={{ color: color.fgMuted, fontSize: fontSize.meta }}>—</span>
+              : byPlan.map(([p, n]) => <CountPill key={p} label={p} n={n} />)}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, onSuspend, onReactivate, onArchive, onCancelOffboard, onSetLegalHold, onExport }: {
   readonly tenants: readonly Tenant[];
   readonly canManage: boolean;
@@ -284,32 +336,11 @@ function TenantsSection({ tenants, canManage, canOffboard, busy, onProvision, on
   readonly onExport: (id: string) => Promise<void>;
 }): JSX.Element {
   const [name, setName] = useState('');
-
-  // Counts by lifecycle state (prompt §13.1 overview), derived from the same status
-  // the table shows so the summary and rows never disagree.
-  const counts = new Map<string, number>();
-  for (const t of tenants) {
-    const s = statusOf(t);
-    counts.set(s, (counts.get(s) ?? 0) + 1);
-  }
-  const summary = [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
-
   return (
     <section style={{ display: 'grid', gap: space[3] }}>
       <h2 style={{ fontSize: fontSize.section, fontWeight: 600 }}>
         Tenants <span style={{ color: color.fgMuted, fontWeight: 400 }}>({tenants.length})</span>
       </h2>
-
-      {summary.length > 0 && (
-        <div style={{ display: 'flex', gap: space[2], flexWrap: 'wrap' }}>
-          {summary.map(([s, n]) => (
-            <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: space[2] }}>
-              <StatusChip status={s} />
-              <span style={{ fontSize: fontSize.meta, color: color.fgMuted }} className="lc-tabular">{n}</span>
-            </span>
-          ))}
-        </div>
-      )}
 
       {canManage && (
         <form

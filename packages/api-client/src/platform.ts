@@ -110,6 +110,19 @@ export async function revokePlatformRole(opts: ControlPlaneOptions, assignmentId
   await req(opts, 'DELETE', `/api/platform/role-assignments/${enc(assignmentId)}`);
 }
 
+// ── Overview dashboard (§13.1) ──────────────────────────────────────────────
+/** At-a-glance platform health: tenant counts by lifecycle state + plan, past-due count. */
+export interface PlatformOverview {
+  readonly totalTenants: number;
+  readonly tenantsByStatus: Readonly<Record<string, number>>;
+  readonly tenantsByPlan: Readonly<Record<string, number>>;
+  readonly pastDueCount: number;
+}
+
+export function platformOverview(opts: ControlPlaneOptions): Promise<PlatformOverview> {
+  return reqJson<PlatformOverview>(opts, 'GET', '/api/platform/overview');
+}
+
 // ── Tenant registry + lifecycle ────────────────────────────────────────────
 export function listPlatformTenants(opts: ControlPlaneOptions): Promise<readonly Tenant[]> {
   return reqJson<Tenant[]>(opts, 'GET', '/api/platform/tenants');

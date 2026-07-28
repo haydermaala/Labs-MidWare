@@ -715,6 +715,15 @@ app.MapDelete("/api/platform/role-assignments/{assignmentId}",
     return platformAdmin.Revoke(assignmentId) ? Results.NoContent() : Results.NotFound();
 });
 
+// Platform overview dashboard (§13.1): tenant counts by lifecycle state + plan, and a
+// payment-health signal. Any platform role may read it (TenantRead).
+app.MapGet("/api/platform/overview",
+    (IControlPlaneStore store, BillingService billing, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.TenantRead) is { } denied) return denied;
+    return Results.Json(PlatformOverviewBuilder.Build(store.Tenants(), billing.EntitlementsFor));
+});
+
 // Platform tenant lifecycle (Operations) — provision, suspend, reactivate.
 app.MapPost("/api/platform/tenants",
     (PlatformProvisionTenantRequest body, IControlPlaneStore store, AuthService auth, HttpRequest req) =>

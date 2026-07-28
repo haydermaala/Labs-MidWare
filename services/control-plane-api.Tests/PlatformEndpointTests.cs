@@ -266,6 +266,26 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     private sealed record ExportEnvelope(TenantDto Tenant);
+    private sealed record OverviewDto(int TotalTenants, Dictionary<string, int> TenantsByStatus, int PastDueCount);
+
+    [Fact]
+    public async Task Platform_Overview_Is_Gated_And_Counts_Tenants()
+    {
+        await NewTenant("Overview Co");
+
+        // Non-platform caller → 401.
+        var (_, strangerSession) = await NewUser("plat-overview-none@example.test");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await Session(strangerSession).GetAsync("/api/platform/overview")).StatusCode);
+
+        // Any platform role (Auditor holds TenantRead) can read it.
+        var (audId, audSession) = await NewUser("plat-overview-aud@example.test");
+        await GrantPlatformRole(audId, PlatformRoles.Auditor);
+        var res = await Session(audSession).GetAsync("/api/platform/overview");
+        Assert.Equal(HttpStatusCode.OK, res.StatusCode);
+        var overview = (await res.Content.ReadFromJsonAsync<OverviewDto>())!;
+        Assert.True(overview.TotalTenants >= 1);
+    }
 
     [Fact]
     public async Task Legal_Hold_Is_Gated_And_Toggles()
