@@ -104,6 +104,9 @@ jobs:
         run: |
           dotnet tool install --global dotnet-ef --version 10.* || dotnet tool update --global dotnet-ef --version 10.*
           export PATH="$PATH:$HOME/.dotnet/tools"
+          # `ef migrations script` builds the project, so it needs a restore first —
+          # this job does not run the `dotnet` job's build.
+          dotnet restore services/control-plane-api/ControlPlane.Api.csproj
           dotnet ef migrations script --idempotent \
             --project services/control-plane-api/ControlPlane.Api.csproj \
             --startup-project services/control-plane-api/ControlPlane.Api.csproj \
