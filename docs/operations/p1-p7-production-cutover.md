@@ -217,6 +217,13 @@ so they're not missed under pressure:
 - **Run all 16 FORCE'd tables, not just P1's 10.** Un-gating only P1 leaves the 6 P3
   tables fail-closed: sign-in and the fleet recover so the incident looks resolved,
   while scoped authorization silently degrades. The full list is in rls-rollout.md.
+- 🔁 **If you used the un-gate (`NO FORCE`/`DISABLE`), you must re-arm.** Nothing
+  restores RLS automatically — both RLS migrations are already recorded, so
+  `Database.Migrate()` skips them forever and every later deploy ratifies the
+  un-gated state, with no error and no failing test. Before `DATABASE_URL` goes back
+  to `app_runtime`, run `psql "$MIGRATION_DATABASE_URL" -f scripts/rls-enable.sql`
+  as the owner and confirm it reports **16 forced tables / 21 policies**.
+  (Not needed if you rolled back by repointing to the owner — that changes no SQL.)
 - Done this way, rollback touches **no data** — it only relaxes policy enforcement.
 - ⛔ **Reverting the app is only safe once `DATABASE_URL` points at the owner.**
   Pre-merge `main` has no migration/runtime split — it runs `SchemaBootstrap.Apply()`
@@ -230,6 +237,13 @@ so they're not missed under pressure:
 
 ## Post-cutover
 
+- [ ] **Confirm RLS is armed** (the one assertion that is safe read-only against
+      production, and the only thing that would catch an un-re-armed database):
+      ```sql
+      SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+       WHERE n.nspname = 'public' AND c.relforcerowsecurity;  -- must be 16
+      ```
+      Re-run this after **any** incident that touched RLS.
 - [ ] Rotate `app_runtime` passwords if DDL logging may have captured them.
 - [ ] Confirm `RlsCoverageTests` + `SecurityRegressionTests` stay green in CI — the
       latter dynamically enumerates the live route table, so no `/api/tenants/*` or

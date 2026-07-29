@@ -62,23 +62,30 @@ public static class DatabaseConfig
 
         var rest = raw[scheme..];
 
-        // Peel off the query string (?sslmode=...&...) before splitting structure.
-        var query = "";
-        var qMark = rest.IndexOf('?', StringComparison.Ordinal);
-        if (qMark >= 0)
-        {
-            query = rest[(qMark + 1)..];
-            rest = rest[..qMark];
-        }
-
         // userinfo@authority — host/port/db never contain '@', so the LAST '@'
         // is the true separator even when the password itself contains one.
+        //
+        // This is split BEFORE the query string on purpose: a generated password may
+        // contain '?', and peeling the query first would truncate it (silent auth
+        // failure at boot — the same class of outage a '/' in the password already
+        // caused once on staging). A real query can only follow the authority, so
+        // anything before the last '@' is credential material, never a query.
         var userInfo = "";
         var at = rest.LastIndexOf('@');
         if (at >= 0)
         {
             userInfo = rest[..at];
             rest = rest[(at + 1)..];
+        }
+
+        // Peel off the query string (?sslmode=...&...) — now safely, since only the
+        // authority/path remains.
+        var query = "";
+        var qMark = rest.IndexOf('?', StringComparison.Ordinal);
+        if (qMark >= 0)
+        {
+            query = rest[(qMark + 1)..];
+            rest = rest[..qMark];
         }
 
         // authority/database — the first '/' after the authority starts the path.

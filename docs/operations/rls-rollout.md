@@ -218,6 +218,32 @@ ALTER TABLE tenants            NO FORCE ROW LEVEL SECURITY;
 repointing, use `DISABLE ROW LEVEL SECURITY` on the same 16 tables instead — that
 exempts every role.
 
+> ### 🔁 If you ran the un-gate, you MUST re-arm — nothing does it for you
+>
+> `Database.Migrate()` will **never** put RLS back. Both RLS migrations are already
+> recorded in `__EFMigrationsHistory`, so their `Up()` never runs again and every
+> subsequent deploy silently ratifies the un-gated state. `RlsCoverageTests` is
+> model-level and never touches a live database, so **nothing fails** — tenant
+> isolation is simply off, indefinitely, with no error anywhere.
+>
+> Before returning `DATABASE_URL` to `app_runtime`, run as the **owner**:
+>
+> ```bash
+> psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f scripts/rls-enable.sql
+> ```
+>
+> It is idempotent and recreates every `ENABLE`/`FORCE` and all 21 policies —
+> verified against a database where all 16 tables had been `DISABLE`d *and* every
+> policy dropped (0 forced / 0 policies → 16 / 21, then the CI gate passed against
+> the result). It prints the two counts; **both must match (16 and 21)**.
+>
+> This check is also safe to run read-only against production at any time:
+>
+> ```sql
+> SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+>  WHERE n.nspname = 'public' AND c.relforcerowsecurity;  -- must be 16
+> ```
+
 **Partial rollback is worse than none.** Un-gating only P1's 10 tables leaves the 6
 P3 tables (`scopes`, `role_assignments`, `sod_rules`, `custom_roles`,
 `role_permissions`, `approval_requests`) still fail-closed. Sign-in and the fleet

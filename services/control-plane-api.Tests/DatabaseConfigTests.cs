@@ -44,6 +44,22 @@ public sealed class DatabaseConfigTests
     }
 
     [Fact]
+    public void Question_Mark_In_Password_Is_Not_Mistaken_For_The_Query_String()
+    {
+        // '?' only starts the query string when it appears AFTER the userinfo. A
+        // generated password containing '?' must survive intact — truncating it
+        // yields a silent authentication failure at boot, which is exactly the class
+        // of outage the '/'-in-password bug already caused once on staging.
+        var b = Parse("postgres://u:pa?ss@host:5432/db?sslmode=require");
+        Assert.Equal("u", b.Username);
+        Assert.Equal("pa?ss", b.Password);
+        Assert.Equal("host", b.Host);
+        Assert.Equal(5432, b.Port);
+        Assert.Equal("db", b.Database);
+        Assert.Equal(SslMode.Require, b.SslMode); // the REAL query is still parsed
+    }
+
+    [Fact]
     public void Colon_In_Password_Splits_User_On_First_Colon()
     {
         var b = Parse("postgres://u:p:ss@host/db");
