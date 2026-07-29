@@ -170,6 +170,29 @@ token):
 > tenant you know is on a paid plan, confirm `GET /api/tenants/{id}/billing` reports
 > **that plan**, not `trial`.
 
+### When is the soak "clean"? (the exit criteria)
+
+The checks above are a *smoke test* — they run in minutes. The soak is the separate
+question of whether the stack stays healthy across a **business day of real traffic**.
+Do not treat a green smoke test as a completed soak.
+
+Re-run these at the end of the window and compare against the baseline taken at the
+start. All five must hold:
+
+| # | Check | Clean means |
+|---|-------|-------------|
+| 1 | `GET /health/ready` | `"status":"ready"` **and** `"database":"postgres"` — the provider field is what catches a silent in-memory fallback |
+| 2 | `scripts/staging-smoke.sh` (with a `TENANT_ID` that has data) | exit **0** — it now fails on empty reads, which is the RLS fail-closed signature |
+| 3 | Log scan | **zero** occurrences of `row-level security`, `permission denied`, `42501`, `Unhandled`, `Exception` |
+| 4 | RLS still armed | `SELECT count(*) … WHERE relforcerowsecurity` returns **16** |
+| 5 | Deployed commit | still the intended SHA — no unnoticed redeploy or rollback |
+
+If any check fails, the soak restarts after the fix; a partial soak proves nothing.
+
+> **Baseline taken 2026-07-29T13:29Z** on `978fda8`: ready/postgres, 3 tenants
+> (1 active / 1 archived / 1 suspended), unauthenticated platform read 401, and zero
+> errors of every class above.
+
 ## Step B — Production cutover
 
 In the maintenance window, following [rls-rollout.md Step 5](./rls-rollout.md#step-5--production-cutover):
