@@ -15,7 +15,7 @@
 #
 # Requirements: psql. If not installed locally, run inside the postgres image:
 #   docker run --rm -e ADMIN_DATABASE_URL -e APP_RUNTIME_PASSWORD -e OWNER_ROLE \
-#     -v "$PWD/scripts:/s" postgres:16 bash /s/provision-app-runtime.sh
+#     -v "$PWD/scripts:/s" postgres:18 bash /s/provision-app-runtime.sh
 #
 # Usage:
 #   ADMIN_DATABASE_URL=postgres://owner:…@host:5432/db \

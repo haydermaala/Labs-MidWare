@@ -14,7 +14,7 @@
 # Requirements: pg_dump, pg_restore, psql (Postgres client tools). If they are
 # not installed locally, run this inside the official postgres image, e.g.:
 #   docker run --rm -e SOURCE_DATABASE_URL -e TARGET_DATABASE_URL \
-#     -v "$PWD/scripts:/s" postgres:16 bash /s/restore-drill.sh
+#     -v "$PWD/scripts:/s" postgres:18 bash /s/restore-drill.sh
 #
 # Usage:
 #   SOURCE_DATABASE_URL=postgres://…  TARGET_DATABASE_URL=postgres://…  scripts/restore-drill.sh
