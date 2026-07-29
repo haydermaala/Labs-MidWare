@@ -14,6 +14,13 @@ permissions:
   contents: read
   pull-requests: read # gitleaks lists PR commits on pull_request events
 
+# Supersede in-flight runs when a branch is pushed again. Without this, a rapid
+# sequence of pushes runs every intermediate commit to completion — burning Actions
+# minutes and sending a failure email per superseded run. CI already does this.
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   secret-scan:
     name: Secret scan (gitleaks)
