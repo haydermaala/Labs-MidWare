@@ -49,7 +49,16 @@ nonempty() {
     printf '  ✗ %-40s got %s, want 200\n' "$name" "$code"; fail=$((fail + 1)); return
   fi
   if printf '%s' "$body" | tr -d '[:space:]' | grep -qx '\[\]'; then
-    printf '  ⚠ %-40s 200 but EMPTY — confirm no data exists\n' "$name"; warn=$((warn + 1))
+    # An empty list IS the RLS fail-closed signature — the exact failure this script
+    # exists to detect. It must be a FAILURE, not a warning: previously the script
+    # exited 0 here, so a totally fail-closed deploy looked like a clean pass.
+    # Point TENANT_ID at a tenant that HAS data. If it is genuinely empty, re-run with
+    # ALLOW_EMPTY=1 to downgrade this to a warning (and say so in the cutover record).
+    if [ "${ALLOW_EMPTY:-0}" = "1" ]; then
+      printf '  ⚠ %-40s 200 but EMPTY (ALLOW_EMPTY=1)\n' "$name"; warn=$((warn + 1))
+    else
+      printf '  ✗ %-40s 200 but EMPTY — RLS is likely failing closed\n' "$name"; fail=$((fail + 1))
+    fi
   else
     printf '  ✓ %-40s 200, non-empty\n' "$name"; pass=$((pass + 1))
   fi

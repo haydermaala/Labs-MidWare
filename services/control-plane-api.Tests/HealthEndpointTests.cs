@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 
 namespace ControlPlane.Api.Tests;
@@ -59,5 +60,32 @@ public sealed class HealthEndpointTests : IClassFixture<WebApplicationFactory<Pr
         Assert.Contains("frame-ancestors 'none'", policy);
     }
 
-    private sealed record HealthDto(string Status, string Service, string Version);
+    [Fact]
+    public async Task Ready_Reports_NotReady_When_DATABASE_URL_Is_Missing_Outside_Development()
+    {
+        // A missing/mistyped DATABASE_URL silently drops the app onto the EF in-memory
+        // provider, whose CanConnectAsync() returns true — so readiness used to report
+        // GREEN while every tenant read an EMPTY database. The production cutover
+        // verifies "/health/ready green", so that gap made the check worthless.
+        using var production = new WebApplicationFactory<Program>()
+            .WithWebHostBuilder(b => b.UseEnvironment("Production"));
+
+        var response = await production.CreateClient().GetAsync("/health/ready");
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<HealthDto>();
+        Assert.Equal("not-ready", body!.Status);
+        Assert.Contains("in-memory", body.Database, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Ready_Names_The_Active_Database_Provider()
+    {
+        // The provider is surfaced so an operator can tell a real Postgres readiness
+        // from the dev fallback at a glance.
+        var body = await _factory.CreateClient().GetFromJsonAsync<HealthDto>("/health/ready");
+        Assert.Equal("in-memory", body!.Database); // tests run on the fallback, in Development
+    }
+
+    private sealed record HealthDto(string Status, string Service, string Version, string? Database);
 }

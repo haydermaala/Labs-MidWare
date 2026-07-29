@@ -206,19 +206,40 @@ app.MapGet("/health", () => Results.Json(new HealthResponse("ok", "control-plane
 // Readiness: verifies the database is reachable, so an orchestrator never routes
 // traffic to (or completes a rollout onto) a replica that cannot serve requests.
 // Returns 503 when the DB is unreachable.
+//
+// CRITICAL: a missing or mistyped DATABASE_URL does NOT surface as an error — the
+// app falls back to the EF in-memory provider, whose CanConnectAsync() returns true.
+// Readiness would then be green while every tenant silently reads an EMPTY database.
+// Outside Development that fallback is never legitimate, so it is reported not-ready
+// and named in the payload. The cutover runbook's "/health/ready green" step depends
+// on this distinction.
+var onInMemoryFallback = postgres is null;
+var fallbackIsFatal = onInMemoryFallback && !app.Environment.IsDevelopment();
+if (fallbackIsFatal)
+{
+    StartupLog.InMemoryFallbackInNonDevelopment(app.Logger, app.Environment.EnvironmentName);
+}
+
 app.MapGet("/health/ready", async (IDbContextFactory<AppDbContext> factory) =>
 {
+    if (fallbackIsFatal)
+    {
+        return Results.Json(
+            new HealthResponse("not-ready", "control-plane-api", version, "in-memory (DATABASE_URL not configured)"),
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+    var provider = onInMemoryFallback ? "in-memory" : "postgres";
     try
     {
         await using var db = await factory.CreateDbContextAsync();
         return await db.Database.CanConnectAsync()
-            ? Results.Json(new HealthResponse("ready", "control-plane-api", version))
-            : Results.Json(new HealthResponse("not-ready", "control-plane-api", version),
+            ? Results.Json(new HealthResponse("ready", "control-plane-api", version, provider))
+            : Results.Json(new HealthResponse("not-ready", "control-plane-api", version, provider),
                 statusCode: StatusCodes.Status503ServiceUnavailable);
     }
     catch (Exception ex) when (ex is not OperationCanceledException)
     {
-        return Results.Json(new HealthResponse("not-ready", "control-plane-api", version),
+        return Results.Json(new HealthResponse("not-ready", "control-plane-api", version, provider),
             statusCode: StatusCodes.Status503ServiceUnavailable);
     }
 });
@@ -1454,7 +1475,10 @@ app.MapFallbackToFile("index.html");
 app.Run();
 
 /// <summary>Minimal, PHI-free health payload.</summary>
-internal sealed record HealthResponse(string Status, string Service, string Version);
+/// <summary>Health payload. <paramref name="Database"/> names the active provider so a
+/// silent in-memory fallback (missing DATABASE_URL) is visible rather than reported
+/// green; null on the liveness endpoint, which checks no dependencies.</summary>
+internal sealed record HealthResponse(string Status, string Service, string Version, string? Database = null);
 
 /// <summary>Request to create a tenant.</summary>
 internal sealed record CreateTenantRequest(string Name);

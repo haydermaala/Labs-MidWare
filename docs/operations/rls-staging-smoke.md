@@ -11,7 +11,17 @@ Its job is not "do endpoints respond" but "does the app behave correctly under
 - a read that returns **empty** where data exists (a missed scope on a read path —
   RLS fails *closed*, so a bug looks like "no data", not an error).
 
-A quick pass is scripted: `STAGING_URL=… ADMIN_TOKEN=… scripts/staging-smoke.sh`.
+A quick pass is scripted — note `TENANT_ID` is **required** (the script aborts without
+it), and it must name a tenant that **has** gateways, audit and members:
+
+```bash
+STAGING_URL=https://… ADMIN_TOKEN=… TENANT_ID=ten_… scripts/staging-smoke.sh
+```
+
+An empty list is the RLS fail-closed signature, so the script **fails** (exit 1) on
+one. If the tenant is legitimately empty, re-run with `ALLOW_EMPTY=1` to downgrade
+those to warnings — and record that you did, because it disables the check the script
+exists for.
 The manual two-tenant isolation check below is the one that actually proves RLS.
 
 ## Preconditions
