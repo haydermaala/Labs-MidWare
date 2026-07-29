@@ -101,7 +101,15 @@ soak. Do **not** proceed to production with open RLS symptoms.
 
 - [ ] Re-run `scripts/restore-drill.sh` against the **latest** production backup.
 - [ ] Provision the role on **production** (a distinct, strong password —
-      separate credentials per environment):
+      separate credentials per environment). ⚠️ **`OWNER_ROLE` must be the role that
+      actually owns the tables — i.e. the same role `MIGRATION_DATABASE_URL` connects
+      as.** The script grants on tables owned by `OWNER_ROLE`; if it names a different
+      role, `app_runtime` silently receives **zero grants** on the tables the migrations
+      created, and every query fails with `permission denied` after the cutover. When
+      `ADMIN_DATABASE_URL` already connects as the owner you may omit `OWNER_ROLE` — the
+      script then derives it from `current_user`, which is the safest option. Verify:
+      `SELECT tableowner, count(*) FROM pg_tables WHERE schemaname='public' GROUP BY 1;`
+      should show a single owner, matching what you passed.
 
 ```bash
 ADMIN_DATABASE_URL='postgres://<owner>:<pw>@<prod-host>:5432/<db>' \

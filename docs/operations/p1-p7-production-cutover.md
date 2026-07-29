@@ -53,6 +53,32 @@ All platform tables (`platform_role_assignments`, `platform_support_access_grant
 `platform_security_events`, `platform_offboard_requests`) and `permission_definitions`
 are **global** (no `TenantId`, no RLS) — the `RlsCoverageTests` gate enforces that.
 
+## Already verified on staging (2026-07-28/29)
+
+Recorded so the cutover starts from evidence, not intent. All against the full P1–P7
+stack on staging, as the least-privileged `app_runtime` role:
+
+- **RLS genuinely enforces** — at the DB layer, not just the API: 16 FORCE'd tables,
+  21 policies; `gateways`/`scopes`/`memberships`/`subscriptions`/`audit` all return
+  **0 rows with no tenant GUC**; bound to a tenant, only that tenant's rows; a
+  cross-tenant `INSERT` is refused.
+- **The `AddTenantStatus` backfill works under FORCE RLS** — a tenant created before P7
+  existed came back with `status: "Active"`, proving the `NO FORCE`/`FORCE` bracket.
+- **Device plane** — enroll writes a credential; heartbeat/telemetry/config return 204
+  and the heartbeat **persists** (`LastSeenAt` set); a wrong credential returns 401.
+- **`invitations_token_auth`** — fail-closed with no GUC, blind to a wrong hash, reveals
+  exactly the one matching invitation with no tenant GUC, leaks no others.
+- **Full §10.3 offboarding pipeline** — distinct MFA-satisfied approver (SoD), archive
+  refused during cooling-off (409), then archive succeeded: **5 gateways decommissioned,
+  5 credentials revoked**, completion certificate written.
+- **Break-glass MFA** — Root Owner without MFA gets 403 `{"stepUp":true}`; after
+  enrolment the same read returns 200.
+- **Rollback rehearsed** — un-gate all 16 → owner reads everything, 21 policies intact,
+  row counts identical; re-FORCE → fail-closed restored.
+
+Not yet verified: a business-day soak (everything above was burst testing), and the
+console UI under a live authenticated platform login.
+
 ## Preconditions
 
 Everything in [rls-rollout.md §Preconditions](./rls-rollout.md#preconditions), plus:
@@ -118,6 +144,31 @@ token):
 > **MFA note:** offboarding (and other MFA-gated platform ops) need an
 > **MFA-enrolled, MFA-satisfied** session — a no-MFA login has `MfaSatisfied=false`.
 > Enrol MFA on the operator account used for these checks.
+>
+> **Staffing: the two-party checks need TWO accounts, and one cannot be the admin
+> token.** Support-access approval and offboarding approval both enforce
+> `SeparationOfDuty.IsDistinctParty`, so the approver must differ from the requester.
+> The god-mode token authenticates as the single synthetic principal `platform-admin`,
+> so it can request *or* approve but never both. Provision **two named,
+> MFA-enrolled operator accounts** before starting Step A, or these items cannot be
+> performed at all.
+
+> ### ⚠️ Two checks below are false-negatives by construction — read this
+>
+> **A "green" P3 scopes/SoD check does not prove the P3 tables are readable.** If the
+> `scopes`/`role_assignments` tables fail closed, `EffectiveRolesAt` simply returns no
+> scoped roles and the caller falls back to their flat membership role — so scoped
+> grants silently stop applying while everything *looks* normal. Verify positively:
+> confirm a role granted at a **child scope** actually takes effect there, and confirm
+> `SELECT count(*) FROM scopes` is **non-zero** for a tenant that has them.
+>
+> **A "green" billing check does not prove `subscriptions` is readable.** A fail-closed
+> `subscriptions` read is indistinguishable from "no subscription": `EntitlementsFor`
+> falls back to **Trial** and returns **200**. Every paid tenant would be silently
+> downgraded — enrollments start failing at 2 gateways with 402, paid features vanish,
+> and offboarding retention is computed from the wrong plan. Verify positively: for a
+> tenant you know is on a paid plan, confirm `GET /api/tenants/{id}/billing` reports
+> **that plan**, not `trial`.
 
 ## Step B — Production cutover
 
@@ -163,6 +214,38 @@ If step 4 goes wrong, the fastest recovery is repointing `DATABASE_URL` back to 
 owner — see Rollback. Note that this ordering means the app is **never** running
 against a connection it cannot use.
 
+### If the migration chain fails part-way
+
+The most likely way this cutover actually breaks. EF runs each migration in its own
+transaction, so a mid-chain failure leaves the database **partially migrated**: the
+migrations before the failure are applied and recorded, the failing one is rolled back,
+and the rest never ran.
+
+Do **not** "just redeploy" until you know which migration failed.
+
+1. [ ] Find the boundary — the last recorded migration:
+   ```sql
+   SELECT "MigrationId" FROM "__EFMigrationsHistory" ORDER BY "MigrationId" DESC LIMIT 5;
+   ```
+2. [ ] Read the actual error in the deploy logs. `permission denied` means the migration
+       ran on the wrong connection — check `MIGRATION_DATABASE_URL` is set and is the
+       **owner**.
+3. [ ] Decide by where it stopped:
+   - **Before `AddRowLevelSecurity`** — no RLS is active yet. The app is unaffected;
+     fix the cause and redeploy. `Database.Migrate()` resumes from the boundary.
+   - **After either RLS migration** — RLS is partially armed. **Do not leave it here.**
+     Either fix and redeploy to complete the chain, or un-gate (Rollback below) and
+     re-arm with `scripts/rls-enable.sql` once resolved.
+4. [ ] Re-run the arming check afterwards — it must report **16**:
+   ```sql
+   SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = 'public' AND c.relforcerowsecurity;
+   ```
+
+Because `DATABASE_URL` is still the owner at this point (Step B.1 merges *before*
+repointing), a partially-migrated database keeps serving — the owner is a superuser and
+bypasses whatever FORCE did get applied. That is the main reason for this ordering.
+
 ## Step C — Bootstrap the first platform Root Owner
 
 Until now the single god-mode `ControlPlane__AdminToken` is the only platform access.
@@ -174,6 +257,17 @@ Before you can retire it you must mint a real Root Owner:
 > server only marks a session MFA-satisfied for enrolled users), so the console has
 > **no data at all** for them. The console now explains this and links to enrolment
 > rather than showing empty sections, but the operational order still matters.
+
+> **Getting the `userId`.** There is no email→user lookup endpoint, so you cannot
+> resolve one from the console. Either capture the `id` from the `POST /api/admin/users`
+> response when the account is created, or read it once as the DB owner:
+> `SELECT "Id" FROM users WHERE "Email" = lower('operator@example.com');`
+>
+> **The console will appear to go blank every 10 minutes.** Root Owner demands MFA
+> *and* fresh auth for every permission, and the freshness window is
+> `AuthService.StepUpWindow` = **10 minutes**. After it lapses, platform reads return
+> 403 `{"stepUp":true}` until you re-authenticate. By design — expect it, and do Root
+> Owner work in short focused bursts.
 
 1. [ ] On the named operator account, **enrol MFA first** (Security page), then sign
        out and back in so the session is MFA-satisfied.
@@ -197,6 +291,20 @@ Only once a Root Owner is proven:
       token.
 
 ## Rollback
+
+> **This is the single source of truth for rollback.** `rls-rollout.md` holds the
+> mechanics and `rls-staging-smoke.md` covers verification only; if any of them appear
+> to disagree, follow the order here. Ranked, safest first:
+>
+> 1. **Repoint `DATABASE_URL` → owner.** One variable change, no SQL, no data touched.
+>    Works because Railway's owner is a superuser and bypasses `FORCE`. **Needs no
+>    re-arm.** This resolves nearly every RLS incident.
+> 2. **In-place un-gate** (`NO FORCE` / `DISABLE` on all 16 tables) — for a
+>    non-superuser owner, or to restore the runtime role without repointing.
+>    **Requires re-arming with `scripts/rls-enable.sql` afterwards.**
+> 3. **Revert the app** — only after (1), and only if the new build is itself faulty.
+>
+> ⛔ Never `dotnet ef database update <earlier-migration>`; it drops the P2–P7 tables.
 
 Use [rls-rollout.md §Rollback](./rls-rollout.md#rollback) verbatim. Key facts, restated
 so they're not missed under pressure:
