@@ -123,15 +123,45 @@ token):
 
 In the maintenance window, following [rls-rollout.md Step 5](./rls-rollout.md#step-5--production-cutover):
 
-1. [ ] Repoint production `DATABASE_URL` → `app_runtime`.
-2. [ ] Merge the stack to `main` (**#76 → #77 → #78** order, or fast-forward the tip).
-       Railway deploys; on boot the owner runs the full migration chain (both RLS
-       migrations + the P7 columns) and runtime serves as `app_runtime`.
-3. [ ] Immediately verify:
+> ### ⛔ MERGE FIRST, THEN REPOINT — never the other way round
+>
+> An earlier version of this runbook said to repoint `DATABASE_URL` → `app_runtime`
+> **before** merging. **That takes production down before the cutover even starts.**
+>
+> Verified against the real `origin/main`: the pre-merge build has **no**
+> `MIGRATION_DATABASE_URL` support (zero references in `DatabaseConfig.cs`) and **no**
+> `TenantScope` at all. It calls `SchemaBootstrap.Apply(db)` on boot over the single
+> `DATABASE_URL` — and `scripts/provision-app-runtime.sh` does
+> `REVOKE ALL ON TABLE "__EFMigrationsHistory" FROM app_runtime`. So the moment
+> `DATABASE_URL` points at `app_runtime` while the old image is still deployed, that
+> image boots, tries to touch the migrations-history table, and **crash-loops**.
+>
+> The new build is the first one that can run as `app_runtime` (it has the
+> migration/runtime split and binds the GUCs). So it must be deployed *first*.
+
+1. [ ] **Merge the stack to `main`** (#76 — it now contains P6 and P7; see
+       "The stacked branches"). Railway deploys. `DATABASE_URL` is still the **owner**
+       at this point, which is correct and safe: the owner is a superuser, so it
+       bypasses `FORCE` while the new code is already binding tenant GUCs.
+       On boot the owner runs the full migration chain (both RLS migrations + the P7
+       columns).
+2. [ ] Verify the new build is healthy **before** touching the connection:
+   - [ ] `/health/ready` green; the deploy is `SUCCESS`, not restarting.
+   - [ ] Sign in; the fleet loads; a gateway heartbeat succeeds.
+3. [ ] **Now repoint production `DATABASE_URL` → `app_runtime`** and let the service
+       restart. This is the moment RLS actually starts enforcing, because
+       `app_runtime` is the only role subject to `FORCE`.
+4. [ ] Immediately verify:
    - [ ] `/health/ready` green.
    - [ ] Sign in; fleet loads; a gateway heartbeat succeeds; billing/audit reads
-         return data (not empty).
+         return data (**not empty** — an empty list here is RLS failing closed).
    - [ ] No `row-level security` errors for ~15 min of real traffic.
+   - [ ] Optional, strongest check: run `scripts/verify-rls.sql` as `app_runtime`
+         against production (read-only apart from the two INSERTs it rolls back).
+
+If step 4 goes wrong, the fastest recovery is repointing `DATABASE_URL` back to the
+owner — see Rollback. Note that this ordering means the app is **never** running
+against a connection it cannot use.
 
 ## Step C — Bootstrap the first platform Root Owner
 
@@ -188,7 +218,15 @@ so they're not missed under pressure:
   tables fail-closed: sign-in and the fleet recover so the incident looks resolved,
   while scoped authorization silently degrades. The full list is in rls-rollout.md.
 - Done this way, rollback touches **no data** — it only relaxes policy enforcement.
-- If reverting the app, redeploy the prior `main` (pre-merge).
+- ⛔ **Reverting the app is only safe once `DATABASE_URL` points at the owner.**
+  Pre-merge `main` has no migration/runtime split — it runs `SchemaBootstrap.Apply()`
+  over whatever `DATABASE_URL` is, and `app_runtime` is `REVOKE`d on
+  `__EFMigrationsHistory`. Redeploying it while `DATABASE_URL` is still `app_runtime`
+  **crash-loops production**. Order: repoint to the owner **first**, confirm healthy,
+  *then* redeploy the prior `main` if you still need to.
+- In most incidents you will not need to revert the app at all: repointing
+  `DATABASE_URL` to the owner restores service on its own, because the owner is a
+  superuser and bypasses `FORCE`.
 
 ## Post-cutover
 

@@ -128,9 +128,18 @@ In the maintenance window:
          read returns data (not empty).
    - [ ] No `row-level security` errors in logs for ~15 minutes of real traffic.
 
-Prefer merging **after** the `DATABASE_URL` repoint is live, so the first boot on
-the new schema already runs as `app_runtime`. If your platform couples the two,
-land the merge and repoint back-to-back and watch the first boot closely.
+> ⛔ **Corrected ordering — merge first, then repoint.** This section previously said
+> to prefer repointing `DATABASE_URL` *before* merging. That is wrong and takes
+> production down: the pre-merge image has no `MIGRATION_DATABASE_URL` support and no
+> `TenantScope`, it runs `SchemaBootstrap.Apply()` over the single `DATABASE_URL`, and
+> `provision-app-runtime.sh` REVOKEs `__EFMigrationsHistory` from `app_runtime` — so
+> the old image crash-loops the instant `DATABASE_URL` becomes `app_runtime`.
+>
+> The new build is the first that can run as `app_runtime`. Deploy it first (the owner
+> connection is safe meanwhile — it is a superuser and bypasses `FORCE`), confirm
+> healthy, and only then repoint. See
+> [p1-p7-production-cutover.md Step B](./p1-p7-production-cutover.md#step-b--production-cutover)
+> for the full ordered sequence.
 
 ## Rollback
 
