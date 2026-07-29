@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { GatewaySummary } from '@lab-connect/api-client';
 import { AuthProvider } from '../src/auth/AuthProvider';
+import { StepUpProvider } from '../src/auth/StepUpProvider';
 import { SignInPage } from '../src/auth/SignInPage';
 import { ForgotPasswordPage } from '../src/auth/TokenPages';
 import { GatewayTable, PageHeader } from '../src/pages/Pages';
@@ -19,8 +20,19 @@ function stubFetch(routes: Record<string, [number, unknown]>) {
   });
 }
 
+/**
+ * Mirrors App.tsx's provider composition (AuthProvider > StepUpProvider > Router).
+ * Pages that gate a mutation call useStepUp(), which throws outside its provider —
+ * so omitting StepUpProvider here fails every page test rather than the page.
+ */
 function renderIn(ui: React.ReactElement) {
-  return render(<MemoryRouter><AuthProvider>{ui}</AuthProvider></MemoryRouter>);
+  return render(
+    <MemoryRouter>
+      <AuthProvider>
+        <StepUpProvider>{ui}</StepUpProvider>
+      </AuthProvider>
+    </MemoryRouter>,
+  );
 }
 
 beforeEach(() => {
