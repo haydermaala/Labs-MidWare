@@ -764,6 +764,37 @@ app.MapPost("/api/platform/users",
     return Results.Created($"/api/platform/users/{user.Id}", user);
 });
 
+// Seat the FIRST owner of an ownerless tenant, replacing the god-mode token's
+// POST /api/admin/memberships. Provisioning a tenant creates the row but cannot put a
+// human in it, so without this a new tenant is unreachable — every tenant endpoint
+// requires membership.
+//
+// Confined to genuinely ownerless tenants on purpose: this rescues a stranded tenant,
+// it does not let a platform operator insert themselves into a working one. A tenant
+// that already has an owner manages its own members through the tenant endpoints.
+app.MapPost("/api/platform/tenants/{tenantId}/memberships",
+    (string tenantId, SeedMembershipRequest body, IControlPlaneStore store,
+     MembershipService members, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.MembershipSeed) is { } denied) return denied;
+    if (!store.TenantExists(tenantId)) return Results.NotFound();
+    if (members.HasActiveOwner(tenantId))
+    {
+        return Results.Conflict(new
+        {
+            error = "tenant already has an active owner; manage members through the tenant's own endpoints",
+        });
+    }
+    var role = string.IsNullOrWhiteSpace(body.Role) ? Roles.Owner : body.Role;
+    if (!members.Grant(body.UserId, tenantId, role))
+    {
+        return Results.BadRequest(new { error = "unknown user or role" });
+    }
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    platformAudit.Record("platform.membership.seeded", actorUserId, $"{tenantId}:{body.UserId}:{role}");
+    return Results.NoContent();
+});
+
 // Platform overview dashboard (§13.1): tenant counts by lifecycle state + plan, and a
 // payment-health signal. Any platform role may read it (TenantRead).
 app.MapGet("/api/platform/overview",
@@ -1589,6 +1620,9 @@ internal sealed record RequestOffboardRequest(string SubjectTenantId, string? Re
 
 /// <summary>Place or lift a legal hold on a tenant (P7, §10.3).</summary>
 internal sealed record SetLegalHoldRequest(bool Hold);
+
+/// <summary>Seat the first owner of an ownerless tenant. Role defaults to owner.</summary>
+internal sealed record SeedMembershipRequest(string UserId, string? Role);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);

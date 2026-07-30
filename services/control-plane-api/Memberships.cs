@@ -138,6 +138,23 @@ public sealed class MembershipService
         return result;
     }
 
+    /// <summary>
+    /// Whether the tenant currently has at least one ACTIVE owner. The platform
+    /// seeding path uses this to confine itself to genuinely ownerless tenants: a
+    /// freshly provisioned tenant, or one whose last owner was removed. A tenant that
+    /// already has an owner manages its own membership through the tenant endpoints,
+    /// so platform operators have no business injecting themselves into it.
+    /// </summary>
+    public bool HasActiveOwner(string tenantId)
+    {
+        using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
+        var any = db.Memberships.AsNoTracking()
+            .Any(m => m.TenantId == tenantId && m.Active && m.Role == Roles.Owner);
+        scope.Complete();
+        return any;
+    }
+
     /// <summary>Grant a membership directly (bootstrap/platform-admin path).</summary>
     public bool Grant(string userId, string tenantId, string role)
     {

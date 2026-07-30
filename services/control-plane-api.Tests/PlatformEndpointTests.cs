@@ -217,6 +217,55 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Membership_Seeding_Is_Root_Owner_Only_And_Only_For_Ownerless_Tenants()
+    {
+        // Replaces the god-mode token's POST /api/admin/memberships — the only way to
+        // seat a tenant's first owner. Provisioning creates the row but cannot put a
+        // human in it, and every tenant endpoint requires membership, so without this
+        // a new tenant is permanently unreachable.
+        //
+        // Tighter than the token it replaces: it refuses a tenant that already has an
+        // owner, so it can rescue a stranded tenant but never inject an operator into
+        // a working one.
+        var tenant = await NewTenant("Seedable Co");
+        var (userId, _) = await NewUser($"seed-target-{Guid.NewGuid():N}@example.test");
+
+        // Unauthenticated → 401.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await _factory.CreateClient()
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId })).StatusCode);
+
+        // Operations Admin can provision tenants but must NOT be able to seat owners —
+        // together those two would be tenant takeover.
+        var (opsId, opsSession) = await NewUser("plat-seed-ops@example.test");
+        await GrantPlatformRole(opsId, PlatformRoles.OperationsAdmin);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(opsSession)
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId })).StatusCode);
+
+        // Unknown tenant → 404.
+        Assert.Equal(HttpStatusCode.NotFound, (await Admin()
+            .PostAsJsonAsync("/api/platform/tenants/ten_ghost/memberships", new { userId })).StatusCode);
+
+        // Seats the first owner on an ownerless tenant.
+        Assert.Equal(HttpStatusCode.NoContent, (await Admin()
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId })).StatusCode);
+
+        // The seat is real: the tenant now reports that member.
+        var seated = await Admin().GetFromJsonAsync<List<MemberDto>>($"/api/tenants/{tenant}/members");
+        Assert.Contains(seated!, m => m.UserId == userId && m.Role == "owner");
+
+        // Now that an owner exists, seeding is REFUSED — this is the anti-takeover rule.
+        var (second, _) = await NewUser($"seed-second-{Guid.NewGuid():N}@example.test");
+        Assert.Equal(HttpStatusCode.Conflict, (await Admin()
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId = second })).StatusCode);
+
+        // The seeding is recorded in the platform security log.
+        var events = await Admin().GetFromJsonAsync<List<SecurityEventDto>>("/api/platform/security-events");
+        Assert.Contains(events!, e => e.Kind == "platform.membership.seeded" && e.Detail.Contains(tenant, StringComparison.Ordinal));
+    }
+
+    private sealed record MemberDto(string UserId, string Email, string Role);
+
+    [Fact]
     public async Task An_Approved_Support_Grant_Confers_ReadOnly_Tenant_Access_And_No_More()
     {
         // Regression for a real defect: PlatformSupportService.HasActiveGrant had ZERO
