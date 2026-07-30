@@ -157,6 +157,66 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Platform_User_Creation_Is_Root_Owner_Only()
+    {
+        // Replaces the god-mode token's POST /api/admin/users, which was the ONLY
+        // account-creation path (self-service signup is disabled by policy) and so was
+        // a hard blocker on retiring the token.
+        //
+        // Deliberately Root-Owner-only: the caller chooses the initial password, so
+        // this is effectively the power to authenticate AS the new account. Operations
+        // Admin must NOT hold it — otherwise "provision a tenant" and "create an
+        // account" combine into taking over any tenant.
+        var email = $"plat-created-{Guid.NewGuid():N}@example.test";
+
+        // Unauthenticated → 401.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await _factory.CreateClient()
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // Operations Admin holds tenant provisioning but NOT user creation → 403.
+        var (opsId, opsSession) = await NewUser("plat-usercreate-ops@example.test");
+        await GrantPlatformRole(opsId, PlatformRoles.OperationsAdmin);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(opsSession)
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // Auditor (read-only) likewise → 403.
+        var (audId, audSession) = await NewUser("plat-usercreate-aud@example.test");
+        await GrantPlatformRole(audId, PlatformRoles.Auditor);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(audSession)
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // The god-mode token still works (it bypasses PlatformForbidden) — this is the
+        // path being retired, and it must keep working until the token is withdrawn.
+        var created = await Admin().PostAsJsonAsync("/api/platform/users",
+            new { email, password = "correct horse battery staple" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var user = (await created.Content.ReadFromJsonAsync<UserDto>())!;
+        Assert.Equal(email, user.Email);
+
+        // The new account is real: it can sign in.
+        var login = await _factory.CreateClient().PostAsJsonAsync("/api/auth/login",
+            new { email, password = "correct horse battery staple" });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+
+        // Duplicate email → 409, not a second account.
+        Assert.Equal(HttpStatusCode.Conflict, (await Admin()
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // Weak password rejected.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Admin()
+            .PostAsJsonAsync("/api/platform/users",
+                new { email = $"weak-{Guid.NewGuid():N}@example.test", password = "short" })).StatusCode);
+
+        // The creation is recorded in the platform security log.
+        var events = await Admin().GetFromJsonAsync<List<SecurityEventDto>>("/api/platform/security-events");
+        Assert.Contains(events!, e => e.Kind == "platform.user.created" && e.Detail == user.Id);
+    }
+
+    [Fact]
     public async Task An_Approved_Support_Grant_Confers_ReadOnly_Tenant_Access_And_No_More()
     {
         // Regression for a real defect: PlatformSupportService.HasActiveGrant had ZERO

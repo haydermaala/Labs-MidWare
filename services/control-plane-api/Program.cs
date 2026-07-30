@@ -736,6 +736,34 @@ app.MapDelete("/api/platform/role-assignments/{assignmentId}",
     return platformAdmin.Revoke(assignmentId) ? Results.NoContent() : Results.NotFound();
 });
 
+// Create an operator account under a named platform role, replacing the god-mode
+// token's POST /api/admin/users. Root-Owner-only and MFA + fresh-auth gated: the
+// caller chooses the initial password, so this is effectively the power to
+// authenticate as the new account. Tenant users are NOT created here — they arrive
+// through the invitation flow, which binds tenant, role and recipient to a
+// single-use token. Every creation is written to the platform security log.
+app.MapPost("/api/platform/users",
+    (SignupRequest body, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.UserCreate) is { } denied) return denied;
+    if (!AuthService.LooksLikeEmail(body.Email))
+    {
+        return Results.BadRequest(new { error = "a valid email address is required" });
+    }
+    if (!AuthService.PasswordAcceptable(body.Password))
+    {
+        return Results.BadRequest(new { error = "password must be 12 to 256 characters" });
+    }
+    var user = auth.CreateUser(body.Email, body.Password);
+    if (user is null)
+    {
+        return Results.Conflict(new { error = "email is already registered" });
+    }
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    platformAudit.Record("platform.user.created", actorUserId, user.Id);
+    return Results.Created($"/api/platform/users/{user.Id}", user);
+});
+
 // Platform overview dashboard (§13.1): tenant counts by lifecycle state + plan, and a
 // payment-health signal. Any platform role may read it (TenantRead).
 app.MapGet("/api/platform/overview",
