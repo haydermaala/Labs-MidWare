@@ -177,6 +177,11 @@ app.UseRateLimiter();
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];
 
+// The synthetic actor recorded when the god-mode token acts. It has no user identity,
+// so every action it takes collapses to this one string in the audit trail — which is
+// itself an argument for retiring it in favour of named platform roles.
+const string PlatformAdminActor = "platform-admin";
+
 // Scope-aware authorization — the gate for tenant-scoped endpoints (ADR 0020,
 // layered over the P2 engine of ADR 0019). Every tenant-scoped endpoint is
 // authorized at the tenant ROOT scope: the caller's membership role is synthesized
@@ -1083,18 +1088,42 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     string tenantId, PermissionDefinition permission, string? resourceScopeId = null,
     bool approvalSatisfied = false)
 {
-    if (IsAdmin(req))
-    {
-        return null;
-    }
-    var current = CurrentUser(req, auth);
-    if (current is null)
-    {
-        return Results.Unauthorized();
-    }
-    var userId = current.Value.User.Id;
-    var role = members.RoleIn(userId, tenantId);
+    // BREAK-GLASS. The god-mode token used to `return null` here, which skipped the
+    // engine entirely — and with it every RequiresMfa / RequiresFreshAuth /
+    // RequiresApproval flag. Concretely, Permissions.TenantDeactivate declares
+    // `requiresApproval: true` ("a distinct second party must approve"), yet the token
+    // could deactivate any tenant unilaterally in a single call.
+    //
+    // It now runs THROUGH the engine as Owner. Owner holds all five legacy
+    // capabilities, so every permission the token legitimately reached still resolves —
+    // but the governance flags now apply. MFA and fresh-auth are treated as satisfied
+    // (the token is an out-of-band pre-shared secret, and the bootstrap flows it exists
+    // for are themselves MFA-gated), while approval is NOT: two-party approval is a
+    // property of the tenant's own governance and no credential should be able to
+    // stand in for the second party.
+    var breakGlass = IsAdmin(req);
+    string userId;
+    string? role;
+    (UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? current = null;
     var viaSupportGrant = false;
+
+    if (breakGlass)
+    {
+        userId = PlatformAdminActor;
+        role = Roles.Owner;
+        BreakGlassLog.TenantAccessedWithAdminToken(app.Logger, tenantId, permission.Key);
+    }
+    else
+    {
+        current = CurrentUser(req, auth);
+        if (current is null)
+        {
+            return Results.Unauthorized();
+        }
+        userId = current.Value.User.Id;
+        role = members.RoleIn(userId, tenantId);
+    }
+
     if (role is null)
     {
         // Support access (prompt §13.3): a platform support engineer holding an
@@ -1129,12 +1158,17 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     var decision = scopedEngine.Authorize(new ScopedAuthorizationRequest(
         assignments, tree, userId, targetScopeId, permission.Key,
         authzClock.GetUtcNow(),
-        MfaSatisfied: current.Value.MfaSatisfied,
-        FreshAuth: current.Value.FreshAuth,
+        // Break-glass satisfies the assurance gates (out-of-band secret) but NOT the
+        // two-party gate below.
+        MfaSatisfied: breakGlass || current!.Value.MfaSatisfied,
+        FreshAuth: breakGlass || current!.Value.FreshAuth,
         // A support-grant caller can never satisfy a two-party approval: they are not a
         // member of this tenant, so they must not count as the second party in its own
         // approval flow. (read-only cannot reach an approval-gated permission anyway —
         // this is the belt to that braces.)
+        //
+        // Break-glass does not auto-satisfy it either: approval is the tenant's own
+        // governance, and a credential must not substitute for the second party.
         ApprovalGranted: approvalSatisfied && !viaSupportGrant,
         CustomGrants: customGrants));
     return decision.IsAllowed

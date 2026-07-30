@@ -25,3 +25,19 @@ public static partial class SupportAccessLog
     public static partial void TenantAccessedViaSupportGrant(
         ILogger logger, string userId, string tenantId, string permissionKey);
 }
+
+/// <summary>
+/// Break-glass diagnostics. Use of the god-mode admin token is meant to be rare and
+/// reviewable, so every tenant-scoped call it makes is logged at Warning with the
+/// tenant and permission. If these lines appear in normal operation, the token is
+/// still doing routine work and is not yet ready to be withdrawn.
+/// </summary>
+public static partial class BreakGlassLog
+{
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "break-glass: the platform admin token acted in tenant {TenantId} "
+                + "(permission {PermissionKey}) — no user identity is attached to this action")]
+    public static partial void TenantAccessedWithAdminToken(
+        ILogger logger, string tenantId, string permissionKey);
+}
