@@ -15,6 +15,7 @@ import { API_BASE } from '../config';
 import { useAuth, options } from '../auth/AuthProvider';
 import { PageHeader } from './Pages';
 import { CopyField } from '../shell/Drawer';
+import { TotpQr } from '../auth/TotpQr';
 
 function fmt(instant: string): string {
   const d = new Date(instant);
@@ -176,11 +177,12 @@ function MfaSection({ enabled, token, onChanged }: {
       {flow.step === 'confirm-secret' && (
         <form onSubmit={(e) => void arm(e)} style={{ display: 'grid', gap: space[3] }}>
           <p style={{ margin: 0, color: color.fgMuted, fontSize: fontSize.body }}>
-            Add this secret to your authenticator app (1Password, Google Authenticator, Authy, …) by
-            manual entry, then confirm with the app's current code. The secret is shown only now.
+            Scan the code with your authenticator app, then confirm with the code it shows.
+            The secret is displayed only now.
           </p>
-          <CopyField label="Secret key (enter manually in the app)" value={flow.setup.secret} />
-          <CopyField label="Or paste the setup link (otpauth URI)" value={flow.setup.provisioningUri} />
+          <TotpQr uri={flow.setup.provisioningUri} />
+          <CopyField label="Secret key (if you can't scan, enter this manually)" value={flow.setup.secret} />
+          <CopyField label="Setup link (otpauth URI)" value={flow.setup.provisioningUri} />
           <Field
             label="Current 6-digit code from the app"
             value={code}
