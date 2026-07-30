@@ -1035,9 +1035,28 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     }
     var userId = current.Value.User.Id;
     var role = members.RoleIn(userId, tenantId);
+    var viaSupportGrant = false;
     if (role is null)
     {
-        return Results.Unauthorized(); // non-member: indistinguishable from no access
+        // Support access (prompt §13.3): a platform support engineer holding an
+        // APPROVED, UNEXPIRED, tenant-scoped grant may act in a tenant they are not a
+        // member of. This is the sanctioned replacement for impersonation — and for
+        // the god-mode token's blanket cross-tenant reach.
+        //
+        // It confers `read-only` and nothing more: diagnosis, never mutation. A
+        // support engineer must not be able to decommission a gateway, change a role
+        // or deactivate a tenant on the strength of a support ticket. Anything
+        // destructive still requires real membership.
+        //
+        // Deliberately checked only AFTER membership: a genuine member keeps their own
+        // (possibly higher) role rather than being narrowed by holding a grant.
+        if (!platformSupport.HasActiveGrant(tenantId, userId))
+        {
+            return Results.Unauthorized(); // non-member: indistinguishable from no access
+        }
+        role = Roles.ReadOnly;
+        viaSupportGrant = true;
+        SupportAccessLog.TenantAccessedViaSupportGrant(app.Logger, userId, tenantId, permission.Key);
     }
 
     var (tree, rootId, assignments, customGrants) = RootScopeContext(tenantId, userId, role);
@@ -1053,7 +1072,11 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         authzClock.GetUtcNow(),
         MfaSatisfied: current.Value.MfaSatisfied,
         FreshAuth: current.Value.FreshAuth,
-        ApprovalGranted: approvalSatisfied,
+        // A support-grant caller can never satisfy a two-party approval: they are not a
+        // member of this tenant, so they must not count as the second party in its own
+        // approval flow. (read-only cannot reach an approval-gated permission anyway —
+        // this is the belt to that braces.)
+        ApprovalGranted: approvalSatisfied && !viaSupportGrant,
         CustomGrants: customGrants));
     return decision.IsAllowed
         ? null

@@ -157,6 +157,56 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task An_Approved_Support_Grant_Confers_ReadOnly_Tenant_Access_And_No_More()
+    {
+        // Regression for a real defect: PlatformSupportService.HasActiveGrant had ZERO
+        // consumers, so the whole support-access flow was ceremonial — grants were
+        // requested, distinct-party approved and audited, then conferred no access at
+        // all. This asserts the grant is actually load-bearing, AND that it is scoped
+        // to read-only so a support ticket can never become a destructive action.
+        var tenant = await NewTenant("Support Reach Co");
+        var (reqId, reqSession) = await NewUser("sup-reach-req@example.test");
+        await GrantPlatformRole(reqId, PlatformRoles.SupportEngineer);
+        var support = Session(reqSession);
+        var (secId, secSession) = await NewUser("sup-reach-sec@example.test");
+        await GrantPlatformRole(secId, PlatformRoles.SecurityAdmin);
+        var security = Session(secSession);
+
+        // BEFORE any grant: a non-member is 401 on the tenant surface.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await support.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
+
+        var opened = await support.PostAsJsonAsync("/api/platform/support-grants",
+            new { subjectTenantId = tenant, reason = "incident 43", durationMinutes = 30 });
+        var grant = (await opened.Content.ReadFromJsonAsync<SupportGrantDto>())!;
+
+        // While the grant is only PENDING it must confer nothing.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await support.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await security.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
+
+        // AFTER approval: read access works — the grant is load-bearing.
+        Assert.Equal(HttpStatusCode.OK,
+            (await support.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await support.GetAsync($"/api/tenants/{tenant}/audit")).StatusCode);
+
+        // …but it is READ-ONLY. A mutation must still be refused (403 = authenticated,
+        // recognised, but not permitted) — support must never mutate on a ticket.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await support.PostAsJsonAsync($"/api/tenants/{tenant}/rename", new { name = "pwned" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await support.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+
+        // The grant is tenant-SCOPED: it must not leak into a different tenant.
+        var other = await NewTenant("Unrelated Co");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await support.GetAsync($"/api/tenants/{other}/gateways")).StatusCode);
+    }
+
+    [Fact]
     public async Task Same_Party_Cannot_Self_Approve_Support_Access()
     {
         var tenant = await NewTenant("Self Approve Co");
