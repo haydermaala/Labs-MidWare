@@ -84,11 +84,12 @@ public sealed class RbacTests : IClassFixture<EmailApiFactory>
         var client = Session(session);
 
         Assert.Equal(HttpStatusCode.OK, (await client.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
-        // Fleet management, tenant lifecycle, and user management are refused.
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsync($"/api/tenants/{tenant}/deactivate", null)).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.GetAsync($"/api/tenants/{tenant}/members")).StatusCode);
-        Assert.Equal(HttpStatusCode.Unauthorized, (await client.PostAsJsonAsync($"/api/tenants/{tenant}/invitations",
+        // A member who lacks the capability is refused with 403 (they know it is
+        // their tenant; the reason drives the UI). Non-members get 401 elsewhere.
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsync($"/api/tenants/{tenant}/deactivate", null)).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.GetAsync($"/api/tenants/{tenant}/members")).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, (await client.PostAsJsonAsync($"/api/tenants/{tenant}/invitations",
             new { email = "x@example.test", role = "technician" })).StatusCode);
     }
 

@@ -31,8 +31,23 @@ public interface IControlPlaneStore
     /// </summary>
     bool DeactivateTenant(string tenantId);
 
-    /// <summary>Reactivate a previously deactivated tenant. Returns false if unknown.</summary>
+    /// <summary>Reactivate a previously deactivated tenant. Returns false if unknown
+    /// or if the tenant has been (terminally) offboarded.</summary>
     bool ReactivateTenant(string tenantId);
+
+    /// <summary>Apply a lifecycle transition (P7), guarded by the <see cref="TenantLifecycle"/>
+    /// state machine: begin/cancel/complete offboarding and any other named operation. The
+    /// tenant's Status and the derived Active/Offboarded mirrors are updated together.
+    /// Returns <see cref="TenantTransitionOutcome.InvalidTransition"/> if the operation is
+    /// not legal from the tenant's current state, or NotFound if the tenant is unknown.
+    /// <paramref name="coolingOff"/> sets the offboarding cooling-off window when beginning
+    /// offboarding (from the tenant's retention entitlement); null uses the policy default.</summary>
+    TenantTransitionOutcome TransitionTenant(
+        string tenantId, TenantLifecycleOperation operation, TimeSpan? coolingOff = null);
+
+    /// <summary>Place or lift a legal hold on a tenant (P7, §10.3). While held, archiving
+    /// is refused regardless of cooling-off. Returns false if the tenant is unknown.</summary>
+    bool SetTenantLegalHold(string tenantId, bool hold);
 
     /// <summary>
     /// Decommission a gateway within a tenant: mark it inactive and revoke its device
@@ -51,20 +66,39 @@ public interface IControlPlaneStore
     /// <summary>Gateways for a tenant (never returns another tenant's gateways).</summary>
     IReadOnlyCollection<GatewayView> GatewaysFor(string tenantId);
 
-    /// <summary>Validate a gateway's device credential.</summary>
-    bool ValidateDeviceCredential(string gatewayId, string credential);
+    /// <summary>The org scope a gateway is authorized at, or null for tenant-wide
+    /// (root). Also null when the gateway is not in the tenant, so a caller can
+    /// authorize at the root and let the operation report not-found.</summary>
+    string? GatewayScope(string tenantId, string gatewayId);
+
+    /// <summary>Pin a gateway to an org scope (null clears it to tenant-wide).
+    /// Returns false if the gateway is not in the tenant.</summary>
+    bool AssignGatewayScope(string tenantId, string gatewayId, string? scopeId);
+
+    /// <summary>
+    /// Validate a gateway's device credential and, if valid, return the id of the
+    /// tenant that owns it (null if the credential is wrong or unknown). The
+    /// resolved tenant is the device-plane equivalent of an authenticated session:
+    /// callers pass it back to the steady-state operations below, which run
+    /// tenant-scoped. (ADR 0018 §6.)
+    /// </summary>
+    string? ValidateDeviceCredential(string gatewayId, string credential);
 
     /// <summary>
     /// Record that a gateway was just seen (heartbeat / authenticated contact),
-    /// updating its last-seen time. Returns false if the gateway does not exist.
+    /// updating its last-seen time. <paramref name="tenantId"/> is the tenant
+    /// resolved by <see cref="ValidateDeviceCredential"/>. Returns false if the
+    /// gateway does not exist in that tenant.
     /// </summary>
-    bool RecordHeartbeat(string gatewayId);
+    bool RecordHeartbeat(string tenantId, string gatewayId);
 
     /// <summary>
     /// Record a gateway's PHI-free telemetry snapshot (message counts + last
-    /// capture time), also updating last-seen. Returns false if it does not exist.
+    /// capture time), also updating last-seen. <paramref name="tenantId"/> is the
+    /// tenant resolved by <see cref="ValidateDeviceCredential"/>. Returns false if
+    /// the gateway does not exist in that tenant.
     /// </summary>
-    bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry);
+    bool RecordTelemetry(string tenantId, string gatewayId, GatewayTelemetry telemetry);
 
     /// <summary>The tenant that owns a gateway, if any.</summary>
     string? TenantOfGateway(string gatewayId);
@@ -72,8 +106,10 @@ public interface IControlPlaneStore
     /// <summary>Publish a new (non-production) config version for a tenant's gateway.</summary>
     ConfigView? PublishConfig(string tenantId, string gatewayId, string settingsJson);
 
-    /// <summary>The current config for a gateway, or null.</summary>
-    ConfigView? CurrentConfig(string gatewayId);
+    /// <summary>The current config for a gateway within a tenant, or null.
+    /// <paramref name="tenantId"/> is the tenant resolved by
+    /// <see cref="ValidateDeviceCredential"/>.</summary>
+    ConfigView? CurrentConfig(string tenantId, string gatewayId);
 
     /// <summary>Append-only audit events for a tenant, oldest first.</summary>
     IReadOnlyCollection<AuditEvent> AuditFor(string tenantId);

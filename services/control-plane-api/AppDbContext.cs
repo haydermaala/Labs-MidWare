@@ -28,6 +28,17 @@ public sealed class AppDbContext : DbContext
     public DbSet<BootstrapTokenEntity> BootstrapTokens => Set<BootstrapTokenEntity>();
     public DbSet<ConfigEntity> Configs => Set<ConfigEntity>();
     public DbSet<AuditEntity> Audit => Set<AuditEntity>();
+    public DbSet<PermissionDefinitionEntity> PermissionDefinitions => Set<PermissionDefinitionEntity>();
+    public DbSet<ScopeEntity> Scopes => Set<ScopeEntity>();
+    public DbSet<RoleAssignmentEntity> RoleAssignments => Set<RoleAssignmentEntity>();
+    public DbSet<SodRuleEntity> SodRules => Set<SodRuleEntity>();
+    public DbSet<CustomRoleEntity> CustomRoles => Set<CustomRoleEntity>();
+    public DbSet<RolePermissionEntity> RolePermissions => Set<RolePermissionEntity>();
+    public DbSet<ApprovalRequestEntity> ApprovalRequests => Set<ApprovalRequestEntity>();
+    public DbSet<PlatformRoleAssignmentEntity> PlatformRoleAssignments => Set<PlatformRoleAssignmentEntity>();
+    public DbSet<PlatformSupportGrantEntity> PlatformSupportGrants => Set<PlatformSupportGrantEntity>();
+    public DbSet<PlatformSecurityEventEntity> PlatformSecurityEvents => Set<PlatformSecurityEventEntity>();
+    public DbSet<PlatformOffboardRequestEntity> PlatformOffboardRequests => Set<PlatformOffboardRequestEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -97,6 +108,7 @@ public sealed class AppDbContext : DbContext
         {
             e.ToTable("tenants");
             e.HasKey(x => x.Id);
+            e.Property(x => x.Status).HasMaxLength(32).HasDefaultValue(nameof(TenantStatus.Active));
         });
 
         modelBuilder.Entity<GatewayEntity>(e =>
@@ -110,6 +122,7 @@ public sealed class AppDbContext : DbContext
         {
             e.ToTable("device_credentials");
             e.HasKey(x => x.GatewayId);
+            e.HasIndex(x => x.TenantId);
         });
 
         modelBuilder.Entity<BootstrapTokenEntity>(e =>
@@ -132,6 +145,105 @@ public sealed class AppDbContext : DbContext
             e.ToTable("audit");
             e.HasKey(x => x.Id);
             e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<PermissionDefinitionEntity>(e =>
+        {
+            // A global (non-tenant) reference table mirroring the code catalog
+            // (Permissions.All), reconciled at startup by PermissionCatalogSync.
+            e.ToTable("permission_definitions");
+            e.HasKey(x => x.Key);
+        });
+
+        modelBuilder.Entity<ScopeEntity>(e =>
+        {
+            // A tenant's org-hierarchy nodes (P3). Path is the materialized ancestor
+            // path (incl. self) for prefix descendant queries.
+            e.ToTable("scopes");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+            e.HasIndex(x => x.ParentId);
+            e.HasIndex(x => x.Path);
+        });
+
+        modelBuilder.Entity<RoleAssignmentEntity>(e =>
+        {
+            // A subject's scoped, optionally-expiring role grant (P3).
+            e.ToTable("role_assignments");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+            e.HasIndex(x => x.UserId);
+            e.HasIndex(x => x.ScopeId);
+        });
+
+        modelBuilder.Entity<SodRuleEntity>(e =>
+        {
+            // Per-tenant separation-of-duty rules (P3).
+            e.ToTable("sod_rules");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<CustomRoleEntity>(e =>
+        {
+            // Tenant-defined roles (P3). (TenantId, RoleKey) uniqueness is enforced
+            // in the (future) create-role service; single-column index here to avoid
+            // a composite array that trips CA1861 in generated migrations.
+            e.ToTable("custom_roles");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<RolePermissionEntity>(e =>
+        {
+            // A custom role's granted permissions (P3).
+            e.ToTable("role_permissions");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<ApprovalRequestEntity>(e =>
+        {
+            // Two-party approval requests for approval-gated actions (P3, dynamic SoD).
+            e.ToTable("approval_requests");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.TenantId);
+        });
+
+        modelBuilder.Entity<PlatformRoleAssignmentEntity>(e =>
+        {
+            // A global user's platform (super-admin) role grant (P6). GLOBAL — carries
+            // no TenantId and is never tenant-scoped; protected by platform authz, not RLS.
+            e.ToTable("platform_role_assignments");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.UserId);
+        });
+
+        modelBuilder.Entity<PlatformSupportGrantEntity>(e =>
+        {
+            // A time-limited tenant support-access grant (P6). GLOBAL/platform artifact:
+            // the tenant reference is "SubjectTenantId" (NOT "TenantId") on purpose, so it
+            // is not tenant-RLS-scoped — it is a platform record, gated by platform authz.
+            e.ToTable("platform_support_access_grants");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.SubjectTenantId);
+        });
+
+        modelBuilder.Entity<PlatformSecurityEventEntity>(e =>
+        {
+            // Append-only platform security/audit events (P6, §8). GLOBAL/platform.
+            e.ToTable("platform_security_events");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.At);
+        });
+
+        modelBuilder.Entity<PlatformOffboardRequestEntity>(e =>
+        {
+            // Two-party tenant offboarding requests (P6, §9). GLOBAL/platform — tenant
+            // reference is SubjectTenantId (not TenantId), so not tenant-RLS-scoped.
+            e.ToTable("platform_offboard_requests");
+            e.HasKey(x => x.Id);
+            e.HasIndex(x => x.SubjectTenantId);
         });
     }
 }
@@ -172,6 +284,15 @@ public sealed class UserSessionEntity
     public DateTimeOffset ExpiresAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
+
+    /// <summary>When the user last proved their credentials for this session
+    /// (login or step-up). Drives the fresh-auth window for high-risk permissions
+    /// (ADR 0019).</summary>
+    public DateTimeOffset LastAuthenticatedAt { get; set; }
+
+    /// <summary>Whether MFA was completed for this session (login via MFA, or a
+    /// step-up that included an MFA code).</summary>
+    public bool MfaSatisfied { get; set; }
 }
 
 /// <summary>A single-use, short-lived account token (email verification or
@@ -247,6 +368,27 @@ public sealed class TenantEntity
 
     /// <summary>Inactive tenants are retained but cannot enroll new gateways.</summary>
     public bool Active { get; set; } = true;
+
+    /// <summary>Terminal state (P6): an offboarded tenant is permanently closed via the
+    /// two-party platform offboarding flow. Data is retained but it can never be
+    /// reactivated. Distinct from a (reversible) suspend.</summary>
+    public bool Offboarded { get; set; }
+
+    /// <summary>Lifecycle state (P7, <see cref="TenantStatus"/> name). The authoritative
+    /// lifecycle axis; Active/Offboarded are kept as derived mirrors of it for the
+    /// enrollment/billing paths that still read them. Backfilled from those booleans.</summary>
+    public string Status { get; set; } = nameof(TenantStatus.Active);
+
+    /// <summary>When offboarding began (P7, §10.3). Null unless in the offboarding pipeline.</summary>
+    public DateTimeOffset? OffboardingStartedAt { get; set; }
+
+    /// <summary>Earliest time the tenant may be archived — the end of the cooling-off
+    /// window. Null unless offboarding.</summary>
+    public DateTimeOffset? CoolingOffUntil { get; set; }
+
+    /// <summary>A legal hold overrides archiving/deletion (§10.3) — archive is refused
+    /// while set, regardless of cooling-off.</summary>
+    public bool LegalHold { get; set; }
 }
 
 /// <summary>An enrolled gateway row, scoped to a tenant.</summary>
@@ -256,6 +398,11 @@ public sealed class GatewayEntity
     public string TenantId { get; set; } = "";
     public string Name { get; set; } = "";
     public DateTimeOffset EnrolledAt { get; set; }
+
+    /// <summary>The org scope (site/lab/department) this gateway sits in, for
+    /// scope-aware authorization (P3). Null means tenant-wide — authorized at the
+    /// tenant root, i.e. the pre-P3 behavior.</summary>
+    public string? ScopeId { get; set; }
 
     /// <summary>A decommissioned gateway is inactive and its credential revoked.</summary>
     public bool Active { get; set; } = true;
@@ -274,11 +421,15 @@ public sealed class GatewayEntity
     public DateTimeOffset? LastCaptureAt { get; set; }
 }
 
-/// <summary>A gateway's rotated device credential.</summary>
+/// <summary>A gateway's rotated device credential. Carries the owning tenant
+/// (denormalized from the gateway) so Row-Level Security can scope it with a
+/// single-table predicate and the device-auth policy can resolve the tenant from
+/// the credential alone (ADR 0018 §3, §6).</summary>
 public sealed class DeviceCredentialEntity
 {
     public string GatewayId { get; set; } = "";
     public string Credential { get; set; } = "";
+    public string TenantId { get; set; } = "";
 }
 
 /// <summary>A short-lived, single-use bootstrap token.</summary>
@@ -312,4 +463,191 @@ public sealed class AuditEntity
     public string Kind { get; set; } = "";
     public string TenantId { get; set; } = "";
     public string Detail { get; set; } = "";
+}
+
+/// <summary>A row mirroring one <see cref="PermissionDefinition"/> from the code
+/// catalog (Permissions.All), reconciled at startup. The code catalog is
+/// authoritative; this table exists so the admin UI can list/annotate permissions
+/// and so grants can reference them. Enum-valued fields are stored as their names.
+/// <see cref="Active"/> is false when a permission was removed from the catalog.</summary>
+public sealed class PermissionDefinitionEntity
+{
+    public string Key { get; set; } = "";
+    public string Domain { get; set; } = "";
+    public string Resource { get; set; } = "";
+    public string Action { get; set; } = "";
+    public string Risk { get; set; } = "";
+    public string Capability { get; set; } = "";
+    public bool RequiresMfa { get; set; }
+    public bool RequiresFreshAuth { get; set; }
+    public bool RequiresApproval { get; set; }
+    public bool Delegable { get; set; }
+    public string Description { get; set; } = "";
+    public bool Active { get; set; } = true;
+}
+
+/// <summary>A node in a tenant's org hierarchy (P3): tenant → site → laboratory →
+/// department. Mirrors <see cref="ScopeNode"/>. <see cref="Path"/> is the
+/// materialized ancestor path (including self) for prefix descendant queries; the
+/// root's <see cref="ParentId"/> is null.</summary>
+public sealed class ScopeEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string Type { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string? ParentId { get; set; }
+    public string Path { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>A subject's grant of a role at a scope (P3). Mirrors
+/// <see cref="RoleAssignment"/>, plus provenance (<see cref="GrantedByUserId"/>)
+/// and soft-revocation (<see cref="RevokedAt"/>). A null <see cref="ExpiresAt"/>
+/// never expires; a set <see cref="RevokedAt"/> is inactive regardless.</summary>
+public sealed class RoleAssignmentEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string ScopeId { get; set; } = "";
+    public string GrantedByUserId { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+}
+
+/// <summary>A per-tenant separation-of-duty rule (P3): no single subject may hold
+/// both <see cref="PermissionA"/> and <see cref="PermissionB"/>. Mirrors
+/// <see cref="SodRule"/>.</summary>
+public sealed class SodRuleEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string PermissionA { get; set; } = "";
+    public string PermissionB { get; set; } = "";
+    public bool Active { get; set; } = true;
+}
+
+/// <summary>A tenant-defined role (P3). <see cref="RoleKey"/> is unique within the
+/// tenant and must not collide with a baseline <see cref="Roles"/> name; its granted
+/// permissions are the <see cref="RolePermissionEntity"/> rows for the same key.</summary>
+public sealed class CustomRoleEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string RoleKey { get; set; } = "";
+    public string Name { get; set; } = "";
+    public string CreatedByUserId { get; set; } = "";
+    public DateTimeOffset CreatedAt { get; set; }
+}
+
+/// <summary>One permission granted to a custom role (P3).</summary>
+public sealed class RolePermissionEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string RoleKey { get; set; } = "";
+    public string PermissionKey { get; set; } = "";
+}
+
+/// <summary>A pending/decided request to perform an approval-gated action (P3,
+/// dynamic SoD). Created by a requester who is entitled to the action; a distinct
+/// second entitled party must approve it before it executes. <see cref="ScopeId"/>
+/// is where the action is authorized (null = tenant-wide/root); <see cref="TargetId"/>
+/// names the sub-resource for actions that target one (null for tenant-wide).</summary>
+public sealed class ApprovalRequestEntity
+{
+    public string Id { get; set; } = "";
+    public string TenantId { get; set; } = "";
+    public string PermissionKey { get; set; } = "";
+    public string? ScopeId { get; set; }
+    public string? TargetId { get; set; }
+    public string RequesterUserId { get; set; } = "";
+    public string? Note { get; set; }
+    public string Status { get; set; } = ApprovalStatus.Pending;
+    public DateTimeOffset CreatedAt { get; set; }
+    public string? DecidedByUserId { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
+}
+
+/// <summary>The lifecycle states of an <see cref="ApprovalRequestEntity"/>.</summary>
+public static class ApprovalStatus
+{
+    public const string Pending = "pending";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
+}
+
+/// <summary>A global user's grant of a platform (super-admin) role (P6). GLOBAL, not
+/// tenant-scoped — a platform role is distinct from a tenant membership and is never
+/// inferred from one. <see cref="ExpiresAt"/> supports time-limited grants;
+/// <see cref="Reason"/> records the justification (required for break-glass).</summary>
+public sealed class PlatformRoleAssignmentEntity
+{
+    public string Id { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string Role { get; set; } = "";
+    public string GrantedByUserId { get; set; } = "";
+    public string? Reason { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public DateTimeOffset? RevokedAt { get; set; }
+}
+
+/// <summary>A time-limited tenant support-access grant (P6): a platform support
+/// engineer requests standing access to a tenant, and a DISTINCT approver
+/// (platform.support.approve) grants it. GLOBAL/platform artifact — the tenant
+/// reference is <see cref="SubjectTenantId"/> (not TenantId) so it is not
+/// tenant-RLS-scoped. Access is live only while approved and unexpired.</summary>
+public sealed class PlatformSupportGrantEntity
+{
+    public string Id { get; set; } = "";
+    public string SubjectTenantId { get; set; } = "";
+    public string RequesterUserId { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public int RequestedDurationMinutes { get; set; }
+    public string Status { get; set; } = SupportGrantStatus.Pending;
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset? ExpiresAt { get; set; }
+    public string? DecidedByUserId { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
+}
+
+/// <summary>The lifecycle states of a <see cref="PlatformSupportGrantEntity"/>.</summary>
+public static class SupportGrantStatus
+{
+    public const string Pending = "pending";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
+}
+
+/// <summary>An append-only platform security/audit event (P6, §8): a record of a
+/// privileged platform operation (role grants, tenant lifecycle, support approvals).
+/// GLOBAL/platform — string PK (no sequence) and no TenantId.</summary>
+public sealed class PlatformSecurityEventEntity
+{
+    public string Id { get; set; } = "";
+    public DateTimeOffset At { get; set; }
+    public string Kind { get; set; } = "";
+    public string ActorUserId { get; set; } = "";
+    public string Detail { get; set; } = "";
+}
+
+/// <summary>A two-party tenant offboarding request (P6, §9): a platform operator
+/// requests a tenant's terminal offboarding, and a DISTINCT approver executes it.
+/// GLOBAL/platform — tenant reference is <see cref="SubjectTenantId"/> (not TenantId),
+/// so not tenant-RLS-scoped. Reuses <see cref="ApprovalStatus"/>.</summary>
+public sealed class PlatformOffboardRequestEntity
+{
+    public string Id { get; set; } = "";
+    public string SubjectTenantId { get; set; } = "";
+    public string RequesterUserId { get; set; } = "";
+    public string Reason { get; set; } = "";
+    public string Status { get; set; } = ApprovalStatus.Pending;
+    public DateTimeOffset CreatedAt { get; set; }
+    public string? DecidedByUserId { get; set; }
+    public DateTimeOffset? DecidedAt { get; set; }
 }

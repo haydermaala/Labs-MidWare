@@ -15,8 +15,12 @@ using System.Collections.Concurrent;
 namespace ControlPlane.Api;
 
 /// <summary>A tenant (customer/organization). Inactive tenants are retained but
-/// cannot enroll new gateways.</summary>
-public sealed record Tenant(string Id, string Name, DateTimeOffset CreatedAt, bool Active);
+/// cannot enroll new gateways. <paramref name="Status"/> is the lifecycle state name
+/// (<see cref="TenantStatus"/>); Active/Offboarded are derived mirrors of it.</summary>
+public sealed record Tenant(
+    string Id, string Name, DateTimeOffset CreatedAt, bool Active,
+    bool Offboarded = false, string Status = nameof(TenantStatus.Active),
+    DateTimeOffset? CoolingOffUntil = null, bool LegalHold = false);
 
 /// <summary>PHI-free operational counters a gateway self-reports. These are
 /// message *counts* and timing only — never any message content or result value.
@@ -29,17 +33,20 @@ public sealed record GatewayTelemetry(
     public static readonly GatewayTelemetry Empty = new(0, 0, 0, 0, null);
 }
 
-/// <summary>An enrolled gateway, scoped to a tenant.</summary>
+/// <summary>An enrolled gateway, scoped to a tenant. <see cref="ScopeId"/> is the
+/// org scope it sits in for scope-aware authorization (null = tenant-wide / root).</summary>
 public sealed record Gateway(
     string Id, string TenantId, string Name, DateTimeOffset EnrolledAt, bool Active,
-    DateTimeOffset? LastSeenAt, GatewayTelemetry Telemetry);
+    DateTimeOffset? LastSeenAt, GatewayTelemetry Telemetry, string? ScopeId = null);
 
 /// <summary>Public view of a gateway (no credential). A decommissioned gateway has
 /// Active=false and its credential revoked. <see cref="Status"/> is a derived
-/// liveness label from <see cref="LastSeenAt"/>. Telemetry is the last self-report.</summary>
+/// liveness label from <see cref="LastSeenAt"/>. Telemetry is the last self-report.
+/// <see cref="ScopeId"/> is its org scope (null = tenant-wide).</summary>
 public sealed record GatewayView(
     string Id, string TenantId, string Name, DateTimeOffset EnrolledAt,
-    bool Active, DateTimeOffset? LastSeenAt, string Status, GatewayTelemetry Telemetry);
+    bool Active, DateTimeOffset? LastSeenAt, string Status, GatewayTelemetry Telemetry,
+    string? ScopeId = null);
 
 /// <summary>Derives a gateway's liveness label. Liveness is never persisted — it is
 /// computed from the last-seen time against a staleness window at read time.</summary>
@@ -122,10 +129,91 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         {
             return false;
         }
+        // Never resurrect an archived (terminal) tenant, nor one in the offboarding
+        // pipeline — that requires an explicit CancelOffboarding transition.
+        if (active && (tenant.Offboarded || tenant.Status == nameof(TenantStatus.Offboarding)))
+        {
+            return false;
+        }
         if (tenant.Active != active)
         {
-            _tenants[tenantId] = tenant with { Active = active };
+            _tenants[tenantId] = tenant with
+            {
+                Active = active,
+                Status = active ? nameof(TenantStatus.Active) : nameof(TenantStatus.Suspended),
+            };
             Audit(active ? "tenant.reactivated" : "tenant.deactivated", tenantId, tenant.Name);
+        }
+        return true;
+    }
+
+    public TenantTransitionOutcome TransitionTenant(
+        string tenantId, TenantLifecycleOperation operation, TimeSpan? coolingOff = null)
+    {
+        if (!_tenants.TryGetValue(tenantId, out var tenant))
+        {
+            return TenantTransitionOutcome.NotFound;
+        }
+        var from = TenantLifecycle.Parse(tenant.Status, tenant.Active, tenant.Offboarded);
+        if (TenantLifecycle.Target(from, operation) is not { } to || !TenantLifecycle.CanTransition(from, to))
+        {
+            return TenantTransitionOutcome.InvalidTransition;
+        }
+        var now = _clock.GetUtcNow();
+        if (operation == TenantLifecycleOperation.Archive)
+        {
+            if (tenant.LegalHold)
+            {
+                return TenantTransitionOutcome.LegalHold;
+            }
+            if (tenant.CoolingOffUntil is { } until && now < until)
+            {
+                return TenantTransitionOutcome.CoolingOff;
+            }
+        }
+        _tenants[tenantId] = tenant with
+        {
+            Status = to.ToString(),
+            Active = TenantLifecycle.AllowsOperation(to),
+            Offboarded = to == TenantStatus.Archived,
+            CoolingOffUntil = to == TenantStatus.Offboarding ? now + (coolingOff ?? OffboardingPolicy.CoolingOff) : null,
+        };
+        Audit(TenantLifecycle.AuditKind(operation), tenantId, tenant.Name);
+        // Integration shutdown on archival (§10.3): decommission the fleet, revoke every
+        // device credential, and write a completion certificate.
+        if (to == TenantStatus.Archived)
+        {
+            var gatewayIds = _gateways.Values.Where(g => g.TenantId == tenantId).Select(g => g.Id).ToList();
+            var decommissioned = 0;
+            var revoked = 0;
+            foreach (var id in gatewayIds)
+            {
+                if (_gateways.TryGetValue(id, out var g) && g.Active)
+                {
+                    _gateways[id] = g with { Active = false };
+                    decommissioned++;
+                }
+                if (_deviceCredentials.TryRemove(id, out _))
+                {
+                    revoked++;
+                }
+            }
+            Audit("tenant.archive_completed", tenantId,
+                $"gateways_decommissioned={decommissioned};credentials_revoked={revoked}");
+        }
+        return TenantTransitionOutcome.Ok;
+    }
+
+    public bool SetTenantLegalHold(string tenantId, bool hold)
+    {
+        if (!_tenants.TryGetValue(tenantId, out var tenant))
+        {
+            return false;
+        }
+        if (tenant.LegalHold != hold)
+        {
+            _tenants[tenantId] = tenant with { LegalHold = hold };
+            Audit(hold ? "tenant.legal_hold_placed" : "tenant.legal_hold_lifted", tenantId, tenant.Name);
         }
         return true;
     }
@@ -204,19 +292,41 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
             .OrderBy(g => g.EnrolledAt)
             .Select(g => new GatewayView(
                 g.Id, g.TenantId, g.Name, g.EnrolledAt, g.Active, g.LastSeenAt,
-                GatewayLiveness.Status(g.Active, g.LastSeenAt, now), g.Telemetry))
+                GatewayLiveness.Status(g.Active, g.LastSeenAt, now), g.Telemetry, g.ScopeId))
             .ToList();
     }
 
-    /// <summary>Validate a gateway's device credential (used by gateway calls).</summary>
-    public bool ValidateDeviceCredential(string gatewayId, string credential) =>
-        _deviceCredentials.TryGetValue(gatewayId, out var stored) &&
-        Ids.CredentialsEqual(stored, credential);
+    /// <summary>The scope a gateway is authorized at (null = tenant-wide/root, and
+    /// also when the gateway is not in the tenant — callers fall back to root).</summary>
+    public string? GatewayScope(string tenantId, string gatewayId) =>
+        _gateways.TryGetValue(gatewayId, out var g) && g.TenantId == tenantId ? g.ScopeId : null;
 
-    /// <summary>Record a gateway heartbeat (updates last-seen).</summary>
-    public bool RecordHeartbeat(string gatewayId)
+    /// <summary>Pin a gateway to an org scope (null clears it to tenant-wide).
+    /// Returns false if the gateway is not in the tenant.</summary>
+    public bool AssignGatewayScope(string tenantId, string gatewayId, string? scopeId)
     {
-        if (!_gateways.TryGetValue(gatewayId, out var gateway))
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
+        {
+            return false;
+        }
+        _gateways[gatewayId] = gateway with { ScopeId = scopeId };
+        Audit("gateway.scope_assigned", tenantId, $"{gatewayId} -> {scopeId ?? "(root)"}");
+        return true;
+    }
+
+    /// <summary>Validate a gateway's device credential; return its tenant if valid,
+    /// else null (used by gateway calls to resolve the device-plane tenant).</summary>
+    public string? ValidateDeviceCredential(string gatewayId, string credential) =>
+        _deviceCredentials.TryGetValue(gatewayId, out var stored) &&
+        Ids.CredentialsEqual(stored, credential) &&
+        _gateways.TryGetValue(gatewayId, out var gateway)
+            ? gateway.TenantId
+            : null;
+
+    /// <summary>Record a gateway heartbeat (updates last-seen). Tenant-scoped.</summary>
+    public bool RecordHeartbeat(string tenantId, string gatewayId)
+    {
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
         {
             return false;
         }
@@ -225,10 +335,10 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
     }
 
     /// <summary>Record a gateway's PHI-free telemetry snapshot (also counts as a
-    /// heartbeat — a telemetry report proves the gateway is alive).</summary>
-    public bool RecordTelemetry(string gatewayId, GatewayTelemetry telemetry)
+    /// heartbeat — a telemetry report proves the gateway is alive). Tenant-scoped.</summary>
+    public bool RecordTelemetry(string tenantId, string gatewayId, GatewayTelemetry telemetry)
     {
-        if (!_gateways.TryGetValue(gatewayId, out var gateway))
+        if (!_gateways.TryGetValue(gatewayId, out var gateway) || gateway.TenantId != tenantId)
         {
             return false;
         }
@@ -264,10 +374,11 @@ public sealed class InMemoryControlPlaneStore : IControlPlaneStore
         return new ConfigView(gatewayId, next.Version, next.Environment, next.SettingsJson, next.PublishedAt);
     }
 
-    /// <summary>The current config for a gateway, or null if none published.</summary>
-    public ConfigView? CurrentConfig(string gatewayId)
+    /// <summary>The current config for a gateway within a tenant, or null if none
+    /// published (or it belongs to another tenant). Tenant-scoped.</summary>
+    public ConfigView? CurrentConfig(string tenantId, string gatewayId)
     {
-        if (!_configs.TryGetValue(gatewayId, out var c))
+        if (!_configs.TryGetValue(gatewayId, out var c) || c.TenantId != tenantId)
         {
             return null;
         }

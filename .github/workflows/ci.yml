@@ -67,6 +67,76 @@ jobs:
       - name: Test
         run: dotnet test LabConnect.slnx -c Release --no-build
 
+  # Executes the REAL migration chain against a real Postgres and asserts RLS is
+  # actually enforcing. Until this existed, no CI job ran any migration SQL — the
+  # production cutover would have been its first unattended execution, and the unit
+  # tests run on the in-memory provider where RLS is a no-op.
+  #
+  # The assertions live in scripts/verify-rls.sql and run as a NOSUPERUSER
+  # NOBYPASSRLS role, because an API-level cross-tenant check proves the app's WHERE
+  # clause, not RLS. Both negative controls are verified: un-FORCE a table, or revert
+  # an auxiliary policy to FOR ALL, and this job fails.
+  rls-migration-gate:
+    name: RLS enforcement (real Postgres)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: owner
+          POSTGRES_DB: lc
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGDATABASE: lc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Install psql
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends postgresql-client
+      - name: Generate the idempotent migration script
+        run: |
+          dotnet tool install --global dotnet-ef --version 10.* || dotnet tool update --global dotnet-ef --version 10.*
+          export PATH="$PATH:$HOME/.dotnet/tools"
+          # `ef migrations script` builds the project, so it needs a restore first —
+          # this job does not run the `dotnet` job's build.
+          dotnet restore services/control-plane-api/ControlPlane.Api.csproj
+          dotnet ef migrations script --idempotent \
+            --project services/control-plane-api/ControlPlane.Api.csproj \
+            --startup-project services/control-plane-api/ControlPlane.Api.csproj \
+            -o /tmp/chain.sql
+      - name: Apply the full migration chain (as owner)
+        env: { PGUSER: postgres, PGPASSWORD: owner }
+        run: psql -v ON_ERROR_STOP=1 -q -f /tmp/chain.sql
+      - name: Provision the least-privileged runtime role
+        env: { PGUSER: postgres, PGPASSWORD: owner }
+        run: |
+          psql -v ON_ERROR_STOP=1 -c "CREATE ROLE app_runtime LOGIN PASSWORD 'ci-only' NOSUPERUSER NOBYPASSRLS;"
+          psql -v ON_ERROR_STOP=1 -c "GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO app_runtime;"
+          psql -v ON_ERROR_STOP=1 -c "GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO app_runtime;"
+      - name: Seed the two-tenant fixture (as owner)
+        env: { PGUSER: postgres, PGPASSWORD: owner }
+        run: psql -v ON_ERROR_STOP=1 -q -f scripts/verify-rls-seed.sql
+      - name: Assert RLS enforces (as app_runtime)
+        env: { PGUSER: app_runtime, PGPASSWORD: ci-only }
+        run: psql -v ON_ERROR_STOP=1 -f scripts/verify-rls.sql
+      - name: Negative control — the gate must FAIL when RLS regresses
+        env: { PGUSER: postgres, PGPASSWORD: owner }
+        run: |
+          psql -v ON_ERROR_STOP=1 -q -c "ALTER TABLE gateways NO FORCE ROW LEVEL SECURITY;"
+          if PGUSER=app_runtime PGPASSWORD=ci-only psql -v ON_ERROR_STOP=1 -f scripts/verify-rls.sql >/dev/null 2>&1; then
+            echo "::error::the RLS gate PASSED against a deliberately broken schema — it is vacuous"
+            exit 1
+          fi
+          echo "negative control OK: the gate correctly rejects a broken schema"
+          psql -v ON_ERROR_STOP=1 -q -c "ALTER TABLE gateways FORCE ROW LEVEL SECURITY;"
+
   js:
     name: TypeScript / JS
     runs-on: ubuntu-latest

@@ -19,10 +19,22 @@ namespace ControlPlane.Api;
 /// <summary>A plan's entitlement definition. Quotas/features are provisional
 /// defaults, tunable via configuration; they are the enforcement contract, not
 /// published pricing.</summary>
-public sealed record Plan(string Id, string Name, int GatewayQuota, IReadOnlySet<string> Features)
+public sealed record Plan(string Id, string Name, int GatewayQuota, IReadOnlySet<string> Features, int RetentionDays)
 {
     /// <summary>Whether a gateway count is within this plan's quota (-1 = unlimited).</summary>
     public bool AllowsGatewayCount(int count) => GatewayQuota < 0 || count < GatewayQuota;
+}
+
+/// <summary>Plan feature-entitlement keys, greppable like the plan ids. Presence in
+/// a plan's <see cref="Plan.Features"/> gates the corresponding capability.</summary>
+public static class PlanFeatures
+{
+    public const string Bidirectional = "bidirectional";
+    public const string Sso = "sso";
+
+    /// <summary>Define tenant-specific custom roles (P3) — a paid entitlement, off
+    /// the free Trial plan.</summary>
+    public const string CustomRoles = "custom-roles";
 }
 
 /// <summary>The built-in plan catalog. Ids align with the public pricing tiers;
@@ -36,10 +48,12 @@ public static class Plans
 
     private static readonly Dictionary<string, Plan> Catalog = new(StringComparer.Ordinal)
     {
-        [Trial] = new(Trial, "Trial", GatewayQuota: 2, Features: Set()),
-        [Pilot] = new(Pilot, "Pilot", GatewayQuota: 5, Features: Set()),
-        [Laboratory] = new(Laboratory, "Laboratory", GatewayQuota: 25, Features: Set("bidirectional")),
-        [Network] = new(Network, "Network", GatewayQuota: -1, Features: Set("bidirectional", "sso")),
+        [Trial] = new(Trial, "Trial", GatewayQuota: 2, Features: Set(), RetentionDays: 30),
+        [Pilot] = new(Pilot, "Pilot", GatewayQuota: 5, Features: Set(PlanFeatures.CustomRoles), RetentionDays: 30),
+        [Laboratory] = new(Laboratory, "Laboratory", GatewayQuota: 25,
+            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.CustomRoles), RetentionDays: 90),
+        [Network] = new(Network, "Network", GatewayQuota: -1,
+            Features: Set(PlanFeatures.Bidirectional, PlanFeatures.Sso, PlanFeatures.CustomRoles), RetentionDays: 180),
     };
 
     private static HashSet<string> Set(params string[] features) =>
@@ -75,7 +89,8 @@ public sealed record Entitlements(
     int GatewayQuota,
     IReadOnlyCollection<string> Features,
     DateTimeOffset? CurrentPeriodEnd,
-    bool CancelAtPeriodEnd);
+    bool CancelAtPeriodEnd,
+    int RetentionDays);
 
 /// <summary>Public view of a tenant's subscription (no provider secrets).</summary>
 public sealed record SubscriptionView(
@@ -107,32 +122,45 @@ public sealed class BillingService
     public Entitlements EntitlementsFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var sub = db.Subscriptions.AsNoTracking().FirstOrDefault(s => s.TenantId == tenantId);
+        scope.Complete();
         var entitledPlanId = sub is not null && SubscriptionStatus.IsEntitled(sub.Status) ? sub.PlanId : Plans.Trial;
         var plan = Plans.Resolve(entitledPlanId);
         return new Entitlements(
             plan.Id, plan.Name,
             sub?.Status ?? SubscriptionStatus.Trialing,
             plan.GatewayQuota, plan.Features.ToList(),
-            sub?.CurrentPeriodEnd, sub?.CancelAtPeriodEnd ?? false);
+            sub?.CurrentPeriodEnd, sub?.CancelAtPeriodEnd ?? false,
+            plan.RetentionDays);
     }
+
+    /// <summary>The tenant's data-retention / offboarding cooling-off window from its
+    /// plan (prompt §12 retention_days). Drives how long archiving is deferred.</summary>
+    public TimeSpan RetentionWindowFor(string tenantId) =>
+        TimeSpan.FromDays(EntitlementsFor(tenantId).RetentionDays);
 
     /// <summary>The tenant's provider customer id, if it has one (needed to open
     /// the provider's billing portal). Never surfaced to clients.</summary>
     public string? ProviderCustomerIdFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
-        return db.Subscriptions.AsNoTracking()
+        using var scope = TenantScope.Begin(db, tenantId);
+        var customerId = db.Subscriptions.AsNoTracking()
             .Where(s => s.TenantId == tenantId)
             .Select(s => s.ProviderCustomerId)
             .FirstOrDefault();
+        scope.Complete();
+        return customerId;
     }
 
     /// <summary>The tenant's subscription view, or null if none exists yet.</summary>
     public SubscriptionView? SubscriptionFor(string tenantId)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         var sub = db.Subscriptions.AsNoTracking().FirstOrDefault(s => s.TenantId == tenantId);
+        scope.Complete();
         return sub is null ? null
             : new SubscriptionView(sub.PlanId, sub.Status, sub.CurrentPeriodEnd, sub.CancelAtPeriodEnd);
     }
@@ -140,6 +168,11 @@ public sealed class BillingService
     /// <summary>Whether the tenant may enroll another gateway under its plan quota.</summary>
     public bool CanAddGateway(string tenantId, int currentGatewayCount) =>
         Plans.Resolve(EntitlementsFor(tenantId).PlanId).AllowsGatewayCount(currentGatewayCount);
+
+    /// <summary>Whether the tenant's active plan includes a feature entitlement
+    /// (see <see cref="PlanFeatures"/>).</summary>
+    public bool HasFeature(string tenantId, string feature) =>
+        Plans.Resolve(EntitlementsFor(tenantId).PlanId).Features.Contains(feature);
 
     /// <summary>
     /// Apply a subscription state (from a provider webhook or the fake provider).
@@ -151,8 +184,10 @@ public sealed class BillingService
         DateTimeOffset? currentPeriodEnd, bool cancelAtPeriodEnd)
     {
         using var db = _factory.CreateDbContext();
+        using var scope = TenantScope.Begin(db, tenantId);
         UpsertInto(db, tenantId, planId, status, providerCustomerId, providerSubscriptionId, currentPeriodEnd, cancelAtPeriodEnd);
         db.SaveChanges();
+        scope.Complete();
     }
 
     private void UpsertInto(
@@ -185,6 +220,11 @@ public sealed class BillingService
     public bool TryApplyProviderEvent(ProviderSubscriptionEvent ev)
     {
         using var db = _factory.CreateDbContext();
+        // The event carries its verified tenant, so the whole apply is tenant-scoped.
+        // The replay check only needs to see this tenant's events (ProviderEventId is
+        // globally unique and maps to one tenant); the DB's UNIQUE index is the
+        // backstop for any cross-tenant collision (caught below).
+        using var scope = TenantScope.Begin(db, ev.TenantId);
 
         // Fast path: an already-processed id is a replay — do nothing.
         if (db.BillingEvents.Any(e => e.ProviderEventId == ev.EventId))
@@ -204,6 +244,7 @@ public sealed class BillingService
         try
         {
             db.SaveChanges();
+            scope.Complete();
             return true;
         }
         catch (DbUpdateException)

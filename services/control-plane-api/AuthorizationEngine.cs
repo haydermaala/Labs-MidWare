@@ -1,0 +1,110 @@
+// Authorization engine (P2). A single, central decision point:
+//   authorize(subject, permission, context) -> allow | deny + reason
+// replacing scattered per-endpoint role checks. Deny-by-default: a request is
+// allowed only if a role grants the permission AND every step-up requirement
+// (MFA, fresh re-auth, approval) on that permission is satisfied. Every decision
+// carries a human-readable reason, so denials are explainable ("why can't X?")
+// and the old-vs-new decisions can be shadow-logged before enforcement.
+
+namespace ControlPlane.Api;
+
+/// <summary>A single authorization question.</summary>
+/// <param name="Roles">The subject's active baseline roles in the relevant scope
+/// (a membership carries one today; a collection anticipates P3 multi-role).</param>
+/// <param name="PermissionKey">The permission being requested (see <see cref="Permissions"/>).</param>
+/// <param name="MfaSatisfied">Whether the session has satisfied MFA.</param>
+/// <param name="FreshAuth">Whether the subject re-authenticated recently (step-up).</param>
+/// <param name="ApprovalGranted">Whether a required second-party approval is present.</param>
+/// <param name="CustomGrants">Tenant custom roles as roleKey → permission keys (P3).
+/// Baseline roles resolve from the code matrix regardless; a role that is not a
+/// baseline role is resolved here. Null/empty means baseline-only (pre-P3 behavior).</param>
+public sealed record AuthorizationRequest(
+    IReadOnlyCollection<string> Roles,
+    string PermissionKey,
+    bool MfaSatisfied = false,
+    bool FreshAuth = false,
+    bool ApprovalGranted = false,
+    IReadOnlyDictionary<string, IReadOnlySet<string>>? CustomGrants = null);
+
+/// <summary>Allow or deny.</summary>
+public enum Decision
+{
+    Allow,
+    Deny,
+}
+
+/// <summary>The outcome of an authorization decision, always with a reason.
+/// <see cref="RequiresStepUp"/> is set when the only thing standing in the way is a
+/// step-up requirement (MFA / fresh re-auth) the caller could satisfy — so the UI
+/// can prompt re-authentication rather than treat it as a hard denial.</summary>
+public sealed record AuthorizationResult(Decision Decision, string Reason, bool RequiresStepUp = false)
+{
+    /// <summary>Convenience: whether the request was allowed.</summary>
+    public bool IsAllowed => Decision == Decision.Allow;
+
+    internal static AuthorizationResult Allow() => new(Decision.Allow, "granted");
+
+    internal static AuthorizationResult Deny(string reason) => new(Decision.Deny, reason);
+
+    internal static AuthorizationResult DenyStepUp(string reason) => new(Decision.Deny, reason, RequiresStepUp: true);
+}
+
+/// <summary>Central authorization decision point.</summary>
+public interface IAuthorizationEngine
+{
+    /// <summary>Decide whether <paramref name="request"/> is permitted, with a reason.</summary>
+    AuthorizationResult Authorize(AuthorizationRequest request);
+}
+
+/// <summary>
+/// Evaluates a request against the permission catalog and role matrix. Stateless
+/// and deterministic. In P2 this runs alongside the legacy checks (shadow mode);
+/// once parity is confirmed it becomes the sole gate. Scope/attribute predicates
+/// and separation-of-duty rules plug in here in P3.
+/// </summary>
+public sealed class AuthorizationEngine : IAuthorizationEngine
+{
+    private static readonly IReadOnlyDictionary<string, IReadOnlySet<string>> NoCustomGrants =
+        new Dictionary<string, IReadOnlySet<string>>(StringComparer.Ordinal);
+
+    public AuthorizationResult Authorize(AuthorizationRequest request)
+    {
+        var permission = Permissions.Find(request.PermissionKey);
+        if (permission is null)
+        {
+            // Fail closed: an unknown permission is never granted.
+            return AuthorizationResult.Deny($"unknown permission '{request.PermissionKey}'");
+        }
+
+        if (request.Roles is null || request.Roles.Count == 0)
+        {
+            return AuthorizationResult.Deny("subject has no active role in this scope");
+        }
+
+        var customGrants = request.CustomGrants ?? NoCustomGrants;
+        var grantedByAnyRole = request.Roles.Any(role => RoleGrants.Grants(role, permission.Key, customGrants));
+        if (!grantedByAnyRole)
+        {
+            return AuthorizationResult.Deny($"no role in [{string.Join(", ", request.Roles)}] grants '{permission.Key}'");
+        }
+
+        // Role grants the permission — now enforce its step-up requirements. These
+        // are satisfiable by re-authenticating, so they flag RequiresStepUp.
+        if (permission.RequiresMfa && !request.MfaSatisfied)
+        {
+            return AuthorizationResult.DenyStepUp($"'{permission.Key}' requires MFA");
+        }
+
+        if (permission.RequiresFreshAuth && !request.FreshAuth)
+        {
+            return AuthorizationResult.DenyStepUp($"'{permission.Key}' requires recent re-authentication (step-up)");
+        }
+
+        if (permission.RequiresApproval && !request.ApprovalGranted)
+        {
+            return AuthorizationResult.Deny($"'{permission.Key}' requires approval by a second party");
+        }
+
+        return AuthorizationResult.Allow();
+    }
+}

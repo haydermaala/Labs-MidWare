@@ -39,7 +39,7 @@ official image:
 
 ```bash
 docker run --rm -e SOURCE_DATABASE_URL -e TARGET_DATABASE_URL \
-  -v "$PWD/scripts:/s" postgres:16 bash /s/restore-drill.sh
+  -v "$PWD/scripts:/s" postgres:18 bash /s/restore-drill.sh
 ```
 
 The drill: `pg_dump` the source → `pg_restore --clean --if-exists` into the
@@ -48,7 +48,7 @@ queryable, printing row counts. Exits non-zero on any failure.
 
 > **Never point `TARGET_DATABASE_URL` at production** — the restore drops and
 > replaces objects. Use a scratch database (a temporary Railway DB, or a local
-> `postgres:16` container as above).
+> `postgres:18` container as above).
 
 This drill has been exercised against a throwaway Postgres: a seeded source
 (3 migrations + tenants/users/gateways) dumped and restored cleanly into a

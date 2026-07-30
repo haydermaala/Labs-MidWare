@@ -2,7 +2,7 @@
 // MFA challenge flow, account email flows, memberships, and invitations.
 // The SPA keeps the session token in memory and sends Bearer; the API also
 // sets an HttpOnly cookie for same-origin browsing (Phase H).
-import { ApiError } from './index';
+import { errorFrom } from './index';
 
 /** Public view of the signed-in user (no secrets ever cross this surface). */
 export interface AuthUser {
@@ -59,7 +59,7 @@ async function call(
   }
   const res = await f(new URL(path, opts.baseUrl), init);
   if (!res.ok) {
-    throw new ApiError(res.status, `${method} ${path} failed: ${res.status}`);
+    throw await errorFrom(res, path);
   }
   return res;
 }
@@ -94,6 +94,12 @@ export function me(opts: AuthOptions): Promise<AuthUser> {
 
 export async function logout(opts: AuthOptions): Promise<void> {
   await call(opts, 'POST', '/api/auth/logout');
+}
+
+/** Step-up: re-verify credentials to refresh the session's fresh-auth window for
+ * high-risk actions. Provide `code` when the account has MFA enabled. */
+export async function stepUp(opts: AuthOptions, password: string, code?: string): Promise<void> {
+  await call(opts, 'POST', '/api/auth/step-up', { password, code: code ?? null });
 }
 
 /** Always resolves regardless of account existence (server is oracle-free). */

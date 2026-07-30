@@ -7,6 +7,7 @@
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { color, space } from '@lab-connect/ui';
 import { AuthProvider, useAuth } from './auth/AuthProvider';
+import { StepUpProvider } from './auth/StepUpProvider';
 import { SignInPage } from './auth/SignInPage';
 import { AcceptInvitePage, ForgotPasswordPage, ResetPasswordPage, VerifyEmailPage } from './auth/TokenPages';
 import { AppShell } from './shell/AppShell';
@@ -15,6 +16,7 @@ import { SecurityPage } from './pages/SecurityPage';
 import { SettingsPage } from './pages/SettingsPage';
 import { PeoplePage } from './pages/PeoplePage';
 import { BillingPage } from './pages/BillingPage';
+import { PlatformPage } from './pages/PlatformPage';
 import {
   DocsPage, LandingPage, LegalPage, PricingPage, SecurityPublicPage, StatusPage,
 } from './public/PublicPages';
@@ -53,6 +55,7 @@ function Router(): JSX.Element {
           <Route path="/audit" element={<AuditPage />} />
           <Route path="/security" element={<SecurityPage />} />
           <Route path="/billing" element={<BillingPage />} />
+          <Route path="/platform" element={<PlatformPage />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>
       ) : (
@@ -75,9 +78,11 @@ function Router(): JSX.Element {
 export function App(): JSX.Element {
   return (
     <AuthProvider>
-      <BrowserRouter>
-        <Router />
-      </BrowserRouter>
+      <StepUpProvider>
+        <BrowserRouter>
+          <Router />
+        </BrowserRouter>
+      </StepUpProvider>
     </AuthProvider>
   );
 }

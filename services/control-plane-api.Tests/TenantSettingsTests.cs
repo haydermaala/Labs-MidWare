@@ -71,7 +71,8 @@ public sealed class TenantSettingsTests : IClassFixture<AuthApiFactory>
         var tenant = await NewTenant("Locked Name");
         var techSession = await NewMember("rename-tech@example.test", tenant, "tenant-admin");
         var res = await Session(techSession).PostAsJsonAsync($"/api/tenants/{tenant}/rename", new { name = "Nope" });
-        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+        // A member lacking the capability is refused with 403 (non-members get 401).
+        Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
     }
 
     [Fact]

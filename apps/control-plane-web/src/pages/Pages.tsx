@@ -11,6 +11,7 @@ import { Button, StatusBadge, color, fontSize, space } from '@lab-connect/ui';
 import type { StatusKind } from '@lab-connect/ui';
 import { API_BASE } from '../config';
 import { useAuth } from '../auth/AuthProvider';
+import { StepUpCancelledError, useStepUp } from '../auth/StepUpProvider';
 import { OnboardDrawer } from './OnboardDrawer';
 
 /** The fleet endpoints accept any bearer credential; the console sends the
@@ -182,6 +183,7 @@ function Stat({ label, value, tone = 'muted' }: {
 
 export function FleetPage(): JSX.Element {
   const { token, activeTenantId, activeRole } = useAuth();
+  const { guard } = useStepUp();
   const load = useCallback((t: string, id: string) => listGateways(fleetOptions(t), id), []);
   const { state, data, reload } = useTenantData(load);
   const [busyId, setBusyId] = useState<string | null>(null);
@@ -192,8 +194,13 @@ export function FleetPage(): JSX.Element {
     if (token === null || activeTenantId === null) return;
     setBusyId(gatewayId);
     try {
-      await decommissionGateway(fleetOptions(token), activeTenantId, gatewayId);
+      // High-risk: prompts step-up re-auth and retries if the session is not fresh.
+      await guard(() => decommissionGateway(fleetOptions(token), activeTenantId, gatewayId));
       reload();
+    } catch (e) {
+      if (!(e instanceof StepUpCancelledError)) {
+        throw e;
+      }
     } finally {
       setBusyId(null);
     }
