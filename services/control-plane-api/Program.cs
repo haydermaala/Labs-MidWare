@@ -204,6 +204,30 @@ bool IsAdmin(HttpRequest req) =>
     !string.IsNullOrEmpty(adminToken) &&
     req.Headers.Authorization.ToString() == $"Bearer {adminToken}";
 
+// Use this, NOT IsAdmin, at any site where the token grants access.
+//
+// Retiring the token is gated on scripts/break-glass-watch.sh, which answers "has the
+// token been used in this window?" by querying platform_security_events. That answer is
+// only as complete as the recording: a path that ACCEPTS the token without recording
+// makes the gate report a false all-clear, which is worse than no gate at all — it is a
+// confident wrong answer about whether it is safe to lock yourself out of production.
+//
+// So acceptance and recording are deliberately the same call. It is not possible to add
+// a token-accepting path and forget the audit event, because there is no way to ask
+// "is this the token?" at an authorization site without also answering "and it was used".
+//
+// `context` is what the token reached: "tenant:permission" or a bare endpoint key.
+bool BreakGlass(HttpRequest req, string context)
+{
+    if (!IsAdmin(req))
+    {
+        return false;
+    }
+    BreakGlassLog.UsedWithAdminToken(app.Logger, context);
+    platformAudit.Record("platform.break_glass.used", PlatformAdminActor, context);
+    return true;
+}
+
 // --- health ---------------------------------------------------------------
 // Liveness: the process is up (no dependencies checked).
 app.MapGet("/health", () => Results.Json(new HealthResponse("ok", "control-plane-api", version)));
@@ -252,14 +276,14 @@ app.MapGet("/health/ready", async (IDbContextFactory<AppDbContext> factory) =>
 // --- tenant management (admin) --------------------------------------------
 app.MapPost("/api/tenants", (CreateTenantRequest body, IControlPlaneStore store, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!BreakGlass(req, "tenant.create")) return Results.Unauthorized();
     if (string.IsNullOrWhiteSpace(body.Name)) return Results.BadRequest(new { error = "name required" });
     var tenant = store.CreateTenant(body.Name.Trim());
     return Results.Created($"/api/tenants/{tenant.Id}", tenant);
 });
 
 app.MapGet("/api/tenants", (IControlPlaneStore store, HttpRequest req) =>
-    IsAdmin(req) ? Results.Json(store.Tenants()) : Results.Unauthorized());
+    BreakGlass(req, "tenant.list") ? Results.Json(store.Tenants()) : Results.Unauthorized());
 
 // A tenant's general settings (any member of the tenant may read).
 app.MapGet("/api/tenants/{tenantId}/settings", (string tenantId, IControlPlaneStore store, AuthService auth, MembershipService members, HttpRequest req) =>
@@ -380,7 +404,7 @@ app.MapGet("/api/me/memberships", (AuthService auth, MembershipService members, 
 // Platform-admin bootstrap: grant a membership directly (first owner of a tenant).
 app.MapPost("/api/admin/memberships", (GrantMembershipRequest body, MembershipService members, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!BreakGlass(req, $"{body.TenantId}:admin.membership.grant")) return Results.Unauthorized();
     return members.Grant(body.UserId, body.TenantId, body.Role)
         ? Results.NoContent()
         : Results.BadRequest(new { error = "unknown user, tenant, or role" });
@@ -396,6 +420,10 @@ app.MapGet("/api/tenants/{tenantId}/members", (string tenantId, AuthService auth
 // acts with owner authority.
 string ActorRole(HttpRequest req, AuthService auth, MembershipService members, string tenantId)
 {
+    // Deliberately IsAdmin and not BreakGlass: every caller of ActorRole has already
+    // passed Forbidden(...) on this same request, which recorded the break-glass event.
+    // Recording again here would double-count a single use and inflate the readiness
+    // gate's numbers — the gate must count uses, not authorization lookups.
     if (IsAdmin(req))
     {
         return Roles.Owner;
@@ -694,7 +722,7 @@ app.MapPost("/api/tenants/{tenantId}/approvals/{requestId}/reject",
 app.MapGet("/api/platform/whoami",
     (AuthService auth, HttpRequest req) =>
 {
-    if (IsAdmin(req))
+    if (BreakGlass(req, "platform.whoami"))
     {
         return Results.Json(new { roles = PlatformRoles.All.ToArray() });
     }
@@ -1101,7 +1129,7 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     // for are themselves MFA-gated), while approval is NOT: two-party approval is a
     // property of the tenant's own governance and no credential should be able to
     // stand in for the second party.
-    var breakGlass = IsAdmin(req);
+    var breakGlass = BreakGlass(req, $"{tenantId}:{permission.Key}");
     string userId;
     string? role;
     (UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? current = null;
@@ -1111,14 +1139,6 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     {
         userId = PlatformAdminActor;
         role = Roles.Owner;
-        BreakGlassLog.TenantAccessedWithAdminToken(app.Logger, tenantId, permission.Key);
-        // Also record it durably. Logs are a small rolling buffer with no guaranteed
-        // retention, so "no break-glass in the log tail" cannot answer "has the token
-        // been used this month?" — which is exactly the question that gates retiring
-        // it. platform_security_events is append-only and timestamped, so the readiness
-        // check becomes a precise query over a real window instead of a guess.
-        platformAudit.Record("platform.break_glass.used", PlatformAdminActor,
-            $"{tenantId}:{permission.Key}");
     }
     else
     {
@@ -1220,24 +1240,51 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
 // roles lack the permission (or who needs step-up) gets 403 + reason.
 IResult? PlatformForbidden(HttpRequest req, AuthService auth, PlatformPermissionDefinition permission)
 {
-    if (IsAdmin(req))
+    // Break-glass runs THROUGH the engine, exactly as it now does in Forbidden.
+    //
+    // This gate used to `return null` at its first statement for the token, which had
+    // two consequences. The visible one: every RequiresMfa / RequiresFreshAuth flag on
+    // a platform permission was skipped — including the Critical, Root-Owner-only
+    // platform.user.create and platform.membership.seed, whose MFA requirement was
+    // therefore decorative whenever the token was used.
+    //
+    // The dangerous one: it recorded nothing. Forbidden was fixed to record
+    // platform.break_glass.used, but this gate was left short-circuiting, so the ENTIRE
+    // /api/platform/* surface was invisible to scripts/break-glass-watch.sh. Verified
+    // against production: three successful platform calls with the token produced zero
+    // audit events. The readiness gate would have reported "candidate for withdrawal"
+    // while the token was in daily platform use — a false all-clear on the one question
+    // that decides whether it is safe to withdraw it.
+    //
+    // MFA and fresh auth are treated as satisfied (the token is an out-of-band
+    // pre-shared secret) so every permission it legitimately reached still resolves;
+    // the change is that the decision is now made by the engine and is always recorded.
+    var breakGlass = BreakGlass(req, $"platform:{permission.Key}");
+    (UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? current = null;
+    IReadOnlyCollection<string> roles;
+
+    if (breakGlass)
     {
-        return null;
+        roles = PlatformRoles.All.ToArray();
     }
-    var current = CurrentUser(req, auth);
-    if (current is null)
+    else
     {
-        return Results.Unauthorized();
+        current = CurrentUser(req, auth);
+        if (current is null)
+        {
+            return Results.Unauthorized();
+        }
+        roles = platformAdmin.RolesFor(current.Value.User.Id);
+        if (roles.Count == 0)
+        {
+            return Results.Unauthorized(); // not a platform user
+        }
     }
-    var roles = platformAdmin.RolesFor(current.Value.User.Id);
-    if (roles.Count == 0)
-    {
-        return Results.Unauthorized(); // not a platform user
-    }
+
     var decision = platformEngine.Authorize(new PlatformAuthorizationRequest(
         roles.ToList(), permission.Key,
-        MfaSatisfied: current.Value.MfaSatisfied,
-        FreshAuth: current.Value.FreshAuth));
+        MfaSatisfied: breakGlass || current!.Value.MfaSatisfied,
+        FreshAuth: breakGlass || current!.Value.FreshAuth));
     return decision.IsAllowed
         ? null
         : Results.Json(
@@ -1278,7 +1325,7 @@ app.MapPost("/api/auth/signup", (SignupRequest body, AuthService auth) =>
 // Platform admin creates users while self-service signup is disabled.
 app.MapPost("/api/admin/users", (SignupRequest body, AuthService auth, HttpRequest req) =>
 {
-    if (!IsAdmin(req)) return Results.Unauthorized();
+    if (!BreakGlass(req, "admin.user.create")) return Results.Unauthorized();
     if (!AuthService.LooksLikeEmail(body.Email))
     {
         return Results.BadRequest(new { error = "a valid email address is required" });
