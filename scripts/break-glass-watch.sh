@@ -14,7 +14,13 @@
 #
 # EXIT CODE IS THE POINT:
 #   0  no break-glass use in the window -> the token is a candidate for withdrawal
-#   1  break-glass use in the window    -> still in use; do NOT withdraw
+#   1  break-glass use in the window, or an unreadable window -> do NOT withdraw
+#   2  the check itself failed          -> no verdict at all; NOT evidence of quiet
+#
+# 1 and 2 are deliberately distinct. A checker that crashes exits nonzero too, and a
+# nonzero exit read as "still in use" is a wrong answer that looks like a careful one.
+# The verdict below is written by the analysis itself; if no verdict arrives, the
+# script says so instead of inferring one from a failure.
 #
 # Usage:
 #   scripts/break-glass-watch.sh [environment] [days]
@@ -45,9 +51,18 @@ TOKEN="${ADMIN_TOKEN:-$(railway variables --service "$SERVICE" --environment "$E
 events=$(curl -sS -m 30 -H "Authorization: Bearer $TOKEN" \
   "$BASE/api/platform/security-events?limit=500" 2>/dev/null || echo '[]')
 
-printf '%s' "$events" | WINDOW_DAYS="$WINDOW_DAYS" python3 -c '
+VERDICT_FILE=$(mktemp)
+trap 'rm -f "$VERDICT_FILE"' EXIT
+
+set +e
+printf '%s' "$events" | WINDOW_DAYS="$WINDOW_DAYS" VERDICT_FILE="$VERDICT_FILE" python3 -c '
 import json, os, sys
+
 from datetime import datetime, timedelta, timezone
+
+def verdict(v):
+    with open(os.environ["VERDICT_FILE"], "w") as fh:
+        fh.write(v)
 
 days = int(os.environ["WINDOW_DAYS"])
 cutoff = datetime.now(timezone.utc) - timedelta(days=days)
@@ -76,20 +91,33 @@ if oldest and oldest > cutoff and len(events) >= 500:
     print(f"  ⚠ the trail only reaches {oldest.date()}, which is INSIDE your {days}d window,")
     print("    and the 500-event page is full — older use may exist but be unreadable.")
     print("    Treat this as INCONCLUSIVE, not as evidence of quiet.")
-    sys.exit(1)
+    verdict("inconclusive"); sys.exit(1)
 
 if in_window:
     print()
     print("  break-glass calls in window:")
     for e in in_window[:20]:
-        print(f"    {e.get(\"at\",\"\")[:19]}  {e.get(\"detail\",\"\")}")
+        print("    %s  %s" % (e.get("at","")[:19], e.get("detail","")))
     print()
     print("✗ The admin token is still being used. Do NOT withdraw it — move the caller")
     print("  above onto a named platform role first.")
-    sys.exit(1)
+    verdict("in-use"); sys.exit(1)
 
 print()
 print(f"✓ No break-glass use in the last {days}d. The token is a candidate for withdrawal.")
 print("  Confirm operator workflows were actually exercised in this period — a quiet")
 print("  window on an idle system is not evidence.")
+verdict("ready")
 '
+set -e
+
+case "$(cat "$VERDICT_FILE" 2>/dev/null)" in
+  ready)                 exit 0 ;;
+  in-use|inconclusive)   exit 1 ;;
+  *)
+    echo
+    echo "✗ The readiness check produced NO verdict — the checker itself failed above."
+    echo "  This is not evidence the token is unused, and it is not evidence it is used."
+    echo "  Fix the checker and re-run before making any withdrawal decision."
+    exit 2 ;;
+esac
