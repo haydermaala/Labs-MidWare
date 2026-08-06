@@ -46,6 +46,24 @@ set -euo pipefail
 ENVIRONMENT="${1:-staging}"
 WINDOW_DAYS="${2:-7}"
 
+# SINCE — where the retirement clock starts.
+#
+# Migration and verification work legitimately uses the token, and those uses are in the
+# append-only trail forever. A 30d window run the day after a migration will therefore
+# report "in use" for the next 30 days on the strength of work you already know about,
+# which tells you nothing and trains you to ignore the gate.
+#
+# SINCE declares a clock start: uses before it are excluded as known and accounted for.
+# The effective cutoff is the LATER of (now - days) and SINCE, so this can only ever
+# narrow the window, never widen it past the days you asked for.
+#
+# This is the one knob that could be used to manufacture a green result, so it is never
+# silent: the count of excluded uses is printed, and the ready verdict repeats the clock
+# start and the number it excluded. Set it once when the clock starts, not per run.
+#
+#   SINCE=2026-08-06T10:00:00Z scripts/break-glass-watch.sh production 30
+SINCE="${SINCE:-${3:-}}"
+
 case "$ENVIRONMENT" in
   production) BASE="${BASE:-https://lc.spottiq.com}" ;;
   staging)    BASE="${BASE:-https://labs-midware-staging.up.railway.app}" ;;
@@ -115,7 +133,7 @@ trap 'rm -f "$VERDICT_FILE"' EXIT
 
 set +e
 printf '%s' "$events" | WINDOW_DAYS="$WINDOW_DAYS" VERDICT_FILE="$VERDICT_FILE" \
-  DISCOUNT_SELF_READS="$DISCOUNT_SELF_READS" python3 -c '
+  DISCOUNT_SELF_READS="$DISCOUNT_SELF_READS" SINCE="$SINCE" python3 -c '
 import json, os, sys
 
 from datetime import datetime, timedelta, timezone
@@ -126,6 +144,20 @@ def verdict(v):
 
 days = int(os.environ["WINDOW_DAYS"])
 cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+
+since_raw = (os.environ.get("SINCE") or "").strip()
+since = None
+if since_raw:
+    try:
+        since = datetime.fromisoformat(since_raw.replace("Z", "+00:00"))
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+    except Exception:
+        print(f"  SINCE={since_raw!r} is not a readable timestamp (want 2026-08-06 or")
+        print("  2026-08-06T10:00:00Z). Refusing to guess a clock start.")
+        sys.exit(2)
+    # Only ever narrows: max() cannot reach further back than the days requested.
+    cutoff = max(cutoff, since)
 try:
     events = json.load(sys.stdin)
 except Exception:
@@ -150,12 +182,19 @@ discounted = len(all_uses) - len(uses)
 in_window = [e for e in uses if (w := when(e)) and w >= cutoff]
 oldest = min((w for e in events if (w := when(e))), default=None)
 
+# Uses that a SINCE clock start pushed out of the window. Printed whenever non-zero so
+# a narrowed window is never mistaken for a quiet one.
+before_clock = [e for e in uses if (w := when(e)) and w < cutoff] if since else []
+
 print(f"  audit events available : {len(events)}")
 print(f"  trail reaches back to  : {oldest.date() if oldest else 'unknown'}")
 print(f"  break-glass uses total : {len(uses)}")
 print(f"  break-glass in window  : {len(in_window)}")
 if discount:
     print(f"  discounted (own reads) : {discounted}")
+if since:
+    print(f"  clock starts           : {since.isoformat()}")
+    print(f"  excluded as pre-clock  : {len(before_clock)}")
 
 if oldest and oldest > cutoff and len(events) >= 500:
     print()
@@ -175,7 +214,17 @@ if in_window:
     verdict("in-use"); sys.exit(1)
 
 print()
-print(f"✓ No break-glass use in the last {days}d. The token is a candidate for withdrawal.")
+if since:
+    print(f"✓ No break-glass use since {since.isoformat()}. The token is a candidate for")
+    print("  withdrawal.")
+    if before_clock:
+        print()
+        print(f"  ⚠ {len(before_clock)} use(s) BEFORE that clock start were excluded. This verdict is")
+        print("    only as good as the claim that those were known, accounted-for work:")
+        for e in before_clock[:10]:
+            print("      %s  %s" % (e.get("at","")[:19], e.get("detail","")))
+else:
+    print(f"✓ No break-glass use in the last {days}d. The token is a candidate for withdrawal.")
 print("  Confirm operator workflows were actually exercised in this period — a quiet")
 print("  window on an idle system is not evidence.")
 if discount:

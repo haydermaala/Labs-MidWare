@@ -43,7 +43,7 @@ has no recovery path if every Root Owner is lost.
 Run the check with:
 
 ```bash
-scripts/break-glass-watch.sh production 30
+SINCE=2026-08-06T10:00:00Z scripts/break-glass-watch.sh production 30
 ```
 
 Set `LC_SESSION` first for the sound reading — sign in as an Auditor or Security Admin and
@@ -51,6 +51,19 @@ take the cookie (`document.cookie.match(/lc_session=([^;]+)/)[1]`). Without it t
 still runs, in the degraded token mode described in B1. Exit codes: `0` ready, `1` in use
 or inconclusive, `2` no verdict reached. `2` is deliberately distinct from `1` — a checker
 that fails must not be mistakable for a checker that found the token in use.
+
+**`SINCE` is where the retirement clock starts, and it matters here.** The migration and
+verification work of 2026-08-06 used the token legitimately, and those uses are in the
+append-only trail permanently — so a 30-day window run today reports "in use" on the
+strength of work already accounted for, which tells you nothing and trains you to ignore
+the gate. Set `SINCE` once to the moment the clock starts and leave it; the effective
+cutoff is the later of `now - days` and `SINCE`, so it can only narrow the window, never
+widen it. It is also the one knob that could manufacture a green result, so it is never
+silent: excluded uses are counted in the output and listed individually in the verdict.
+
+The known pre-clock uses as of 2026-08-06 are all verification calls made while proving
+the audit recording worked: `platform.whoami`, `platform:platform.tenant.read`, and
+`ten_43eb2e9b…:fleet.gateway.view`.
 
 ---
 
