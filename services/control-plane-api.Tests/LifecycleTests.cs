@@ -48,7 +48,11 @@ public sealed class LifecycleTests : IClassFixture<ApiFactory>
         var admin = AdminClient();
         var tenant = await CreateTenant(admin, "Lab A");
 
-        var deactivate = await admin.PostAsync($"/api/tenants/{tenant}/deactivate", null);
+        // Suspend via the PLATFORM endpoint, which is the operator path. The tenant's
+        // own /deactivate is two-party (Permissions.TenantDeactivate declares
+        // requiresApproval) and is no longer reachable unilaterally — see
+        // Admin_Token_Cannot_Bypass_Two_Party_Approval below.
+        var deactivate = await admin.PostAsync($"/api/platform/tenants/{tenant}/suspend", null);
         Assert.Equal(HttpStatusCode.NoContent, deactivate.StatusCode);
 
         // No token can be issued while deactivated.
@@ -59,7 +63,7 @@ public sealed class LifecycleTests : IClassFixture<ApiFactory>
         var tenants = await admin.GetFromJsonAsync<List<TenantDto>>("/api/tenants");
         Assert.False(tenants!.Single(t => t.Id == tenant).Active);
 
-        var reactivate = await admin.PostAsync($"/api/tenants/{tenant}/reactivate", null);
+        var reactivate = await admin.PostAsync($"/api/platform/tenants/{tenant}/reactivate", null);
         Assert.Equal(HttpStatusCode.NoContent, reactivate.StatusCode);
 
         var restored = await admin.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null);
@@ -70,8 +74,32 @@ public sealed class LifecycleTests : IClassFixture<ApiFactory>
     public async Task Deactivate_Unknown_Tenant_Is_NotFound()
     {
         var admin = AdminClient();
-        var res = await admin.PostAsync("/api/tenants/ten_missing/deactivate", null);
+        // The platform suspend path is the operator route; unknown tenant → 404.
+        var res = await admin.PostAsync("/api/platform/tenants/ten_missing/suspend", null);
         Assert.Equal(HttpStatusCode.NotFound, res.StatusCode);
+    }
+
+    [Fact]
+    public async Task Admin_Token_Cannot_Bypass_Two_Party_Approval()
+    {
+        // The god-mode token used to short-circuit `Forbidden` before the authorization
+        // engine ran, which skipped every RequiresMfa / RequiresFreshAuth /
+        // RequiresApproval flag. Permissions.TenantDeactivate is declared
+        // `requiresApproval: true` — "a distinct second authorized party must approve"
+        // — yet the token could deactivate any tenant unilaterally in one call.
+        //
+        // Break-glass now runs THROUGH the engine as Owner: it still reaches everything
+        // an owner can reach, but a credential can no longer stand in for the second
+        // party in a tenant's own governance.
+        var admin = AdminClient();
+        var tenant = await CreateTenant(admin, "Two Party Co");
+
+        var direct = await admin.PostAsync($"/api/tenants/{tenant}/deactivate", null);
+        Assert.Equal(HttpStatusCode.Forbidden, direct.StatusCode);
+
+        // And the tenant really is still active — the call was refused, not silently applied.
+        var tenants = await admin.GetFromJsonAsync<List<TenantDto>>("/api/tenants");
+        Assert.True(tenants!.Single(t => t.Id == tenant).Active);
     }
 
     [Fact]

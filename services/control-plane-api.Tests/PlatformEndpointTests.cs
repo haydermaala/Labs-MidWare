@@ -157,6 +157,165 @@ public sealed class PlatformEndpointTests : IClassFixture<EmailApiFactory>
     }
 
     [Fact]
+    public async Task Platform_User_Creation_Is_Root_Owner_Only()
+    {
+        // Replaces the god-mode token's POST /api/admin/users, which was the ONLY
+        // account-creation path (self-service signup is disabled by policy) and so was
+        // a hard blocker on retiring the token.
+        //
+        // Deliberately Root-Owner-only: the caller chooses the initial password, so
+        // this is effectively the power to authenticate AS the new account. Operations
+        // Admin must NOT hold it — otherwise "provision a tenant" and "create an
+        // account" combine into taking over any tenant.
+        var email = $"plat-created-{Guid.NewGuid():N}@example.test";
+
+        // Unauthenticated → 401.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await _factory.CreateClient()
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // Operations Admin holds tenant provisioning but NOT user creation → 403.
+        var (opsId, opsSession) = await NewUser("plat-usercreate-ops@example.test");
+        await GrantPlatformRole(opsId, PlatformRoles.OperationsAdmin);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(opsSession)
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // Auditor (read-only) likewise → 403.
+        var (audId, audSession) = await NewUser("plat-usercreate-aud@example.test");
+        await GrantPlatformRole(audId, PlatformRoles.Auditor);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(audSession)
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // The god-mode token still works (it bypasses PlatformForbidden) — this is the
+        // path being retired, and it must keep working until the token is withdrawn.
+        var created = await Admin().PostAsJsonAsync("/api/platform/users",
+            new { email, password = "correct horse battery staple" });
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var user = (await created.Content.ReadFromJsonAsync<UserDto>())!;
+        Assert.Equal(email, user.Email);
+
+        // The new account is real: it can sign in.
+        var login = await _factory.CreateClient().PostAsJsonAsync("/api/auth/login",
+            new { email, password = "correct horse battery staple" });
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+
+        // Duplicate email → 409, not a second account.
+        Assert.Equal(HttpStatusCode.Conflict, (await Admin()
+            .PostAsJsonAsync("/api/platform/users",
+                new { email, password = "correct horse battery staple" })).StatusCode);
+
+        // Weak password rejected.
+        Assert.Equal(HttpStatusCode.BadRequest, (await Admin()
+            .PostAsJsonAsync("/api/platform/users",
+                new { email = $"weak-{Guid.NewGuid():N}@example.test", password = "short" })).StatusCode);
+
+        // The creation is recorded in the platform security log.
+        var events = await Admin().GetFromJsonAsync<List<SecurityEventDto>>("/api/platform/security-events");
+        Assert.Contains(events!, e => e.Kind == "platform.user.created" && e.Detail == user.Id);
+    }
+
+    [Fact]
+    public async Task Membership_Seeding_Is_Root_Owner_Only_And_Only_For_Ownerless_Tenants()
+    {
+        // Replaces the god-mode token's POST /api/admin/memberships — the only way to
+        // seat a tenant's first owner. Provisioning creates the row but cannot put a
+        // human in it, and every tenant endpoint requires membership, so without this
+        // a new tenant is permanently unreachable.
+        //
+        // Tighter than the token it replaces: it refuses a tenant that already has an
+        // owner, so it can rescue a stranded tenant but never inject an operator into
+        // a working one.
+        var tenant = await NewTenant("Seedable Co");
+        var (userId, _) = await NewUser($"seed-target-{Guid.NewGuid():N}@example.test");
+
+        // Unauthenticated → 401.
+        Assert.Equal(HttpStatusCode.Unauthorized, (await _factory.CreateClient()
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId })).StatusCode);
+
+        // Operations Admin can provision tenants but must NOT be able to seat owners —
+        // together those two would be tenant takeover.
+        var (opsId, opsSession) = await NewUser("plat-seed-ops@example.test");
+        await GrantPlatformRole(opsId, PlatformRoles.OperationsAdmin);
+        Assert.Equal(HttpStatusCode.Forbidden, (await Session(opsSession)
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId })).StatusCode);
+
+        // Unknown tenant → 404.
+        Assert.Equal(HttpStatusCode.NotFound, (await Admin()
+            .PostAsJsonAsync("/api/platform/tenants/ten_ghost/memberships", new { userId })).StatusCode);
+
+        // Seats the first owner on an ownerless tenant.
+        Assert.Equal(HttpStatusCode.NoContent, (await Admin()
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId })).StatusCode);
+
+        // The seat is real: the tenant now reports that member.
+        var seated = await Admin().GetFromJsonAsync<List<MemberDto>>($"/api/tenants/{tenant}/members");
+        Assert.Contains(seated!, m => m.UserId == userId && m.Role == "owner");
+
+        // Now that an owner exists, seeding is REFUSED — this is the anti-takeover rule.
+        var (second, _) = await NewUser($"seed-second-{Guid.NewGuid():N}@example.test");
+        Assert.Equal(HttpStatusCode.Conflict, (await Admin()
+            .PostAsJsonAsync($"/api/platform/tenants/{tenant}/memberships", new { userId = second })).StatusCode);
+
+        // The seeding is recorded in the platform security log.
+        var events = await Admin().GetFromJsonAsync<List<SecurityEventDto>>("/api/platform/security-events");
+        Assert.Contains(events!, e => e.Kind == "platform.membership.seeded" && e.Detail.Contains(tenant, StringComparison.Ordinal));
+    }
+
+    private sealed record MemberDto(string UserId, string Email, string Role);
+
+    [Fact]
+    public async Task An_Approved_Support_Grant_Confers_ReadOnly_Tenant_Access_And_No_More()
+    {
+        // Regression for a real defect: PlatformSupportService.HasActiveGrant had ZERO
+        // consumers, so the whole support-access flow was ceremonial — grants were
+        // requested, distinct-party approved and audited, then conferred no access at
+        // all. This asserts the grant is actually load-bearing, AND that it is scoped
+        // to read-only so a support ticket can never become a destructive action.
+        var tenant = await NewTenant("Support Reach Co");
+        var (reqId, reqSession) = await NewUser("sup-reach-req@example.test");
+        await GrantPlatformRole(reqId, PlatformRoles.SupportEngineer);
+        var support = Session(reqSession);
+        var (secId, secSession) = await NewUser("sup-reach-sec@example.test");
+        await GrantPlatformRole(secId, PlatformRoles.SecurityAdmin);
+        var security = Session(secSession);
+
+        // BEFORE any grant: a non-member is 401 on the tenant surface.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await support.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
+
+        var opened = await support.PostAsJsonAsync("/api/platform/support-grants",
+            new { subjectTenantId = tenant, reason = "incident 43", durationMinutes = 30 });
+        var grant = (await opened.Content.ReadFromJsonAsync<SupportGrantDto>())!;
+
+        // While the grant is only PENDING it must confer nothing.
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await support.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
+
+        Assert.Equal(HttpStatusCode.NoContent,
+            (await security.PostAsync($"/api/platform/support-grants/{grant.Id}/approve", null)).StatusCode);
+
+        // AFTER approval: read access works — the grant is load-bearing.
+        Assert.Equal(HttpStatusCode.OK,
+            (await support.GetAsync($"/api/tenants/{tenant}/gateways")).StatusCode);
+        Assert.Equal(HttpStatusCode.OK,
+            (await support.GetAsync($"/api/tenants/{tenant}/audit")).StatusCode);
+
+        // …but it is READ-ONLY. A mutation must still be refused (403 = authenticated,
+        // recognised, but not permitted) — support must never mutate on a ticket.
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await support.PostAsJsonAsync($"/api/tenants/{tenant}/rename", new { name = "pwned" })).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,
+            (await support.PostAsync($"/api/tenants/{tenant}/enrollment-tokens", null)).StatusCode);
+
+        // The grant is tenant-SCOPED: it must not leak into a different tenant.
+        var other = await NewTenant("Unrelated Co");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await support.GetAsync($"/api/tenants/{other}/gateways")).StatusCode);
+    }
+
+    [Fact]
     public async Task Same_Party_Cannot_Self_Approve_Support_Access()
     {
         var tenant = await NewTenant("Self Approve Co");

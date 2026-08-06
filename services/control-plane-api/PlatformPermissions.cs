@@ -46,6 +46,32 @@ public static class PlatformPermissions
     public static readonly PlatformPermissionDefinition UserRead =
         Def("user", "read", RiskLevel.Low, "Read global user records (no tenant business data).");
 
+    /// <summary>
+    /// Create an operator account. Critical, and Root-Owner-only, because the creator
+    /// chooses the initial password — so this is effectively the power to authenticate
+    /// AS the new account. It is a bootstrap primitive, not routine onboarding: tenant
+    /// users arrive through the invitation flow (which binds tenant, role and intended
+    /// recipient to a single-use token), so nothing day-to-day needs this.
+    /// Replaces the god-mode token's POST /api/admin/users.
+    /// </summary>
+    public static readonly PlatformPermissionDefinition UserCreate =
+        Def("user", "create", RiskLevel.Critical,
+            "Create an operator account (bootstrap; tenant users come via invitations).",
+            requiresMfa: true, requiresFreshAuth: true);
+
+    /// <summary>
+    /// Seat the FIRST owner of an ownerless tenant. Critical and Root-Owner-only for
+    /// the same reason as <see cref="UserCreate"/> — the two together are tenant
+    /// takeover, so they must never be split across roles that one person could hold.
+    /// The endpoint additionally refuses any tenant that already has an active owner,
+    /// so this can rescue a stranded tenant but cannot inject an operator into a
+    /// working one. Replaces the god-mode token's POST /api/admin/memberships.
+    /// </summary>
+    public static readonly PlatformPermissionDefinition MembershipSeed =
+        Def("membership", "seed", RiskLevel.Critical,
+            "Seat the first owner of an ownerless tenant (bootstrap only).",
+            requiresMfa: true, requiresFreshAuth: true);
+
     // ── Support access (time-limited tenant sessions) ────────────────────────
     public static readonly PlatformPermissionDefinition SupportRequest =
         Def("support", "request", RiskLevel.Medium, "Request a time-limited tenant support-access grant.");
@@ -78,7 +104,7 @@ public static class PlatformPermissions
     [
         TenantRead, TenantProvision, TenantSuspend, TenantOffboard, TenantExport,
         SubscriptionManage,
-        UserRead,
+        UserRead, UserCreate, MembershipSeed,
         SupportRequest, SupportApprove,
         FeatureFlagManage, ReleaseManage, JobManage,
         SecurityEventRead, AuditRead,

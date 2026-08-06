@@ -177,6 +177,11 @@ app.UseRateLimiter();
 var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0";
 var adminToken = app.Configuration["ControlPlane:AdminToken"];
 
+// The synthetic actor recorded when the god-mode token acts. It has no user identity,
+// so every action it takes collapses to this one string in the audit trail — which is
+// itself an argument for retiring it in favour of named platform roles.
+const string PlatformAdminActor = "platform-admin";
+
 // Scope-aware authorization — the gate for tenant-scoped endpoints (ADR 0020,
 // layered over the P2 engine of ADR 0019). Every tenant-scoped endpoint is
 // authorized at the tenant ROOT scope: the caller's membership role is synthesized
@@ -736,6 +741,65 @@ app.MapDelete("/api/platform/role-assignments/{assignmentId}",
     return platformAdmin.Revoke(assignmentId) ? Results.NoContent() : Results.NotFound();
 });
 
+// Create an operator account under a named platform role, replacing the god-mode
+// token's POST /api/admin/users. Root-Owner-only and MFA + fresh-auth gated: the
+// caller chooses the initial password, so this is effectively the power to
+// authenticate as the new account. Tenant users are NOT created here — they arrive
+// through the invitation flow, which binds tenant, role and recipient to a
+// single-use token. Every creation is written to the platform security log.
+app.MapPost("/api/platform/users",
+    (SignupRequest body, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.UserCreate) is { } denied) return denied;
+    if (!AuthService.LooksLikeEmail(body.Email))
+    {
+        return Results.BadRequest(new { error = "a valid email address is required" });
+    }
+    if (!AuthService.PasswordAcceptable(body.Password))
+    {
+        return Results.BadRequest(new { error = "password must be 12 to 256 characters" });
+    }
+    var user = auth.CreateUser(body.Email, body.Password);
+    if (user is null)
+    {
+        return Results.Conflict(new { error = "email is already registered" });
+    }
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    platformAudit.Record("platform.user.created", actorUserId, user.Id);
+    return Results.Created($"/api/platform/users/{user.Id}", user);
+});
+
+// Seat the FIRST owner of an ownerless tenant, replacing the god-mode token's
+// POST /api/admin/memberships. Provisioning a tenant creates the row but cannot put a
+// human in it, so without this a new tenant is unreachable — every tenant endpoint
+// requires membership.
+//
+// Confined to genuinely ownerless tenants on purpose: this rescues a stranded tenant,
+// it does not let a platform operator insert themselves into a working one. A tenant
+// that already has an owner manages its own members through the tenant endpoints.
+app.MapPost("/api/platform/tenants/{tenantId}/memberships",
+    (string tenantId, SeedMembershipRequest body, IControlPlaneStore store,
+     MembershipService members, AuthService auth, HttpRequest req) =>
+{
+    if (PlatformForbidden(req, auth, PlatformPermissions.MembershipSeed) is { } denied) return denied;
+    if (!store.TenantExists(tenantId)) return Results.NotFound();
+    if (members.HasActiveOwner(tenantId))
+    {
+        return Results.Conflict(new
+        {
+            error = "tenant already has an active owner; manage members through the tenant's own endpoints",
+        });
+    }
+    var role = string.IsNullOrWhiteSpace(body.Role) ? Roles.Owner : body.Role;
+    if (!members.Grant(body.UserId, tenantId, role))
+    {
+        return Results.BadRequest(new { error = "unknown user or role" });
+    }
+    var actorUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
+    platformAudit.Record("platform.membership.seeded", actorUserId, $"{tenantId}:{body.UserId}:{role}");
+    return Results.NoContent();
+});
+
 // Platform overview dashboard (§13.1): tenant counts by lifecycle state + plan, and a
 // payment-health signal. Any platform role may read it (TenantRead).
 app.MapGet("/api/platform/overview",
@@ -1024,20 +1088,63 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     string tenantId, PermissionDefinition permission, string? resourceScopeId = null,
     bool approvalSatisfied = false)
 {
-    if (IsAdmin(req))
+    // BREAK-GLASS. The god-mode token used to `return null` here, which skipped the
+    // engine entirely — and with it every RequiresMfa / RequiresFreshAuth /
+    // RequiresApproval flag. Concretely, Permissions.TenantDeactivate declares
+    // `requiresApproval: true` ("a distinct second party must approve"), yet the token
+    // could deactivate any tenant unilaterally in a single call.
+    //
+    // It now runs THROUGH the engine as Owner. Owner holds all five legacy
+    // capabilities, so every permission the token legitimately reached still resolves —
+    // but the governance flags now apply. MFA and fresh-auth are treated as satisfied
+    // (the token is an out-of-band pre-shared secret, and the bootstrap flows it exists
+    // for are themselves MFA-gated), while approval is NOT: two-party approval is a
+    // property of the tenant's own governance and no credential should be able to
+    // stand in for the second party.
+    var breakGlass = IsAdmin(req);
+    string userId;
+    string? role;
+    (UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? current = null;
+    var viaSupportGrant = false;
+
+    if (breakGlass)
     {
-        return null;
+        userId = PlatformAdminActor;
+        role = Roles.Owner;
+        BreakGlassLog.TenantAccessedWithAdminToken(app.Logger, tenantId, permission.Key);
     }
-    var current = CurrentUser(req, auth);
-    if (current is null)
+    else
     {
-        return Results.Unauthorized();
+        current = CurrentUser(req, auth);
+        if (current is null)
+        {
+            return Results.Unauthorized();
+        }
+        userId = current.Value.User.Id;
+        role = members.RoleIn(userId, tenantId);
     }
-    var userId = current.Value.User.Id;
-    var role = members.RoleIn(userId, tenantId);
+
     if (role is null)
     {
-        return Results.Unauthorized(); // non-member: indistinguishable from no access
+        // Support access (prompt §13.3): a platform support engineer holding an
+        // APPROVED, UNEXPIRED, tenant-scoped grant may act in a tenant they are not a
+        // member of. This is the sanctioned replacement for impersonation — and for
+        // the god-mode token's blanket cross-tenant reach.
+        //
+        // It confers `read-only` and nothing more: diagnosis, never mutation. A
+        // support engineer must not be able to decommission a gateway, change a role
+        // or deactivate a tenant on the strength of a support ticket. Anything
+        // destructive still requires real membership.
+        //
+        // Deliberately checked only AFTER membership: a genuine member keeps their own
+        // (possibly higher) role rather than being narrowed by holding a grant.
+        if (!platformSupport.HasActiveGrant(tenantId, userId))
+        {
+            return Results.Unauthorized(); // non-member: indistinguishable from no access
+        }
+        role = Roles.ReadOnly;
+        viaSupportGrant = true;
+        SupportAccessLog.TenantAccessedViaSupportGrant(app.Logger, userId, tenantId, permission.Key);
     }
 
     var (tree, rootId, assignments, customGrants) = RootScopeContext(tenantId, userId, role);
@@ -1051,9 +1158,18 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
     var decision = scopedEngine.Authorize(new ScopedAuthorizationRequest(
         assignments, tree, userId, targetScopeId, permission.Key,
         authzClock.GetUtcNow(),
-        MfaSatisfied: current.Value.MfaSatisfied,
-        FreshAuth: current.Value.FreshAuth,
-        ApprovalGranted: approvalSatisfied,
+        // Break-glass satisfies the assurance gates (out-of-band secret) but NOT the
+        // two-party gate below.
+        MfaSatisfied: breakGlass || current!.Value.MfaSatisfied,
+        FreshAuth: breakGlass || current!.Value.FreshAuth,
+        // A support-grant caller can never satisfy a two-party approval: they are not a
+        // member of this tenant, so they must not count as the second party in its own
+        // approval flow. (read-only cannot reach an approval-gated permission anyway —
+        // this is the belt to that braces.)
+        //
+        // Break-glass does not auto-satisfy it either: approval is the tenant's own
+        // governance, and a credential must not substitute for the second party.
+        ApprovalGranted: approvalSatisfied && !viaSupportGrant,
         CustomGrants: customGrants));
     return decision.IsAllowed
         ? null
@@ -1538,6 +1654,9 @@ internal sealed record RequestOffboardRequest(string SubjectTenantId, string? Re
 
 /// <summary>Place or lift a legal hold on a tenant (P7, §10.3).</summary>
 internal sealed record SetLegalHoldRequest(bool Hold);
+
+/// <summary>Seat the first owner of an ownerless tenant. Role defaults to owner.</summary>
+internal sealed record SeedMembershipRequest(string UserId, string? Role);
 
 /// <summary>Grant a role to a user at a scope (P3 scoped assignment).</summary>
 internal sealed record GrantRoleRequest(string UserId, string Role, string ScopeId, DateTimeOffset? ExpiresAt);
