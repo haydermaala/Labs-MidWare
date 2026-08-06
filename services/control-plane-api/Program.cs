@@ -1086,6 +1086,28 @@ app.MapGet("/api/platform/security-events",
 // CSRF double-submit lands when the web app is served same-origin (Phase H).
 (UserView User, string SessionId, bool MfaSatisfied, bool FreshAuth)? CurrentUser(HttpRequest req, AuthService auth)
 {
+    // A break-glass request has exactly one identity: the token.
+    //
+    // IsAdmin matches the Authorization header exactly, while the fall-through below
+    // reads the lc_session cookie whenever the header is not "Bearer ses_…" — which the
+    // admin token never is. So a request carrying the token in the header and any user's
+    // session in a cookie used to be god-mode AND that user simultaneously, letting the
+    // token pick its own actor identity per request at all nineteen
+    // `CurrentUser(req, auth)?.User.Id ?? PlatformAdminActor` sites.
+    //
+    // That defeats every control implemented by comparing two identities. Concretely it
+    // reopened two-party approval after the single-call bypass was closed: file the
+    // request with no cookie (requester = platform-admin), approve it wearing a cookie
+    // (approver = that user), IsDistinctParty compares two different strings and passes.
+    // One person, one secret, both parties. See DualIdentityTests.
+    //
+    // Deliberately IsAdmin, not BreakGlass: this is an identity question, not an
+    // authorization site. The gates record the use; recording here would double-count.
+    if (IsAdmin(req))
+    {
+        return null;
+    }
+
     var header = req.Headers.Authorization.ToString();
     string? token = null;
     if (header.StartsWith("Bearer ses_", StringComparison.Ordinal))

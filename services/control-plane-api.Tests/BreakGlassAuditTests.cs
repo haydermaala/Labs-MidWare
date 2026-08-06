@@ -183,6 +183,10 @@ public sealed class BreakGlassAuditTests : IClassFixture<EmailApiFactory>
             // ActorRole: its callers have already passed Forbidden on this same request,
             // which recorded. Recording again would double-count one use.
             if (Within(lines, i, "string ActorRole(", 12)) continue;
+            // CurrentUser: an identity question, not an authorization site. It asks
+            // "does this request have a session identity?" and the answer for a
+            // break-glass request is no. The gate on the same request records the use.
+            if (Within(lines, i, "? CurrentUser(HttpRequest", 22)) continue;
 
             offenders.Add($"Program.cs:{i + 1}: {lines[i].Trim()}");
         }
