@@ -8,7 +8,7 @@ live in the repo from now on.
 
 | # | Blocker | Status |
 | --- | --- | --- |
-| **B1** | Readiness gate measures itself, can never say "ready" | **Fixed** — `break-glass-watch.sh` now requires `LC_SESSION`, an operator session, and has no fallback to the token |
+| **B1** | Readiness gate measures itself, can never say "ready" | **Fixed** — `break-glass-watch.sh` has two observer modes and prints which one it used. `LC_SESSION` (an Auditor/Security-Admin session) discounts nothing and is sound. Without one it falls back to the token and discounts `platform:platform.security_event.read`, its own footprint — usable, but blind to token reads of the audit log, and it says so on every run |
 | **B2** | Regression test guarding the recording is vacuous | **Fixed** — observer is an auditor session; `Observing_The_Trail_Does_Not_Add_To_It` is the control, and a targeted negative control now fails the test it is meant to fail |
 | **B3** | Two-party approval bypassable on tenant deactivation | **Fixed** — root cause was B7 |
 | **B4** | Same on support grants; duration uncapped | **Fixed** — B7 closes the bypass (`Support_Grants_Cannot_Be_Self_Approved_By_The_Token`); duration capped at `MaxDurationMinutes` = 8h |
@@ -39,6 +39,18 @@ be provably working before the variable is unset. `NoAdminTokenTests
 .Retiring_The_Token_Requires_A_Root_Owner_To_Already_Exist` pins why — with the token gone,
 platform roles can only be granted by someone who already holds one, and the application
 has no recovery path if every Root Owner is lost.
+
+Run the check with:
+
+```bash
+scripts/break-glass-watch.sh production 30
+```
+
+Set `LC_SESSION` first for the sound reading — sign in as an Auditor or Security Admin and
+take the cookie (`document.cookie.match(/lc_session=([^;]+)/)[1]`). Without it the script
+still runs, in the degraded token mode described in B1. Exit codes: `0` ready, `1` in use
+or inconclusive, `2` no verdict reached. `2` is deliberately distinct from `1` — a checker
+that fails must not be mistakable for a checker that found the token in use.
 
 ---
 
