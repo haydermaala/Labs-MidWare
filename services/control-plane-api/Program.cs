@@ -1112,6 +1112,13 @@ IResult? Forbidden(HttpRequest req, AuthService auth, MembershipService members,
         userId = PlatformAdminActor;
         role = Roles.Owner;
         BreakGlassLog.TenantAccessedWithAdminToken(app.Logger, tenantId, permission.Key);
+        // Also record it durably. Logs are a small rolling buffer with no guaranteed
+        // retention, so "no break-glass in the log tail" cannot answer "has the token
+        // been used this month?" — which is exactly the question that gates retiring
+        // it. platform_security_events is append-only and timestamped, so the readiness
+        // check becomes a precise query over a real window instead of a guess.
+        platformAudit.Record("platform.break_glass.used", PlatformAdminActor,
+            $"{tenantId}:{permission.Key}");
     }
     else
     {
