@@ -27,6 +27,26 @@ public sealed class PlatformSupportService
 
     /// <summary>Open a pending support-access request for a tenant. Entitlement to
     /// request is checked by the caller (platform.support.request).</summary>
+    /// <summary>Default grant length when the caller does not choose one.</summary>
+    public const int DefaultDurationMinutes = 60;
+
+    /// <summary>
+    /// Hard ceiling on a support grant, one working shift.
+    ///
+    /// The duration was previously floored (<c>&lt;= 0 ? 60 : n</c>) but never capped, so
+    /// a caller could request a grant lasting years. That matters because a grant is
+    /// cross-tenant access to someone else's data: an unbounded one is indistinguishable
+    /// from standing access, which is the thing support grants exist to replace.
+    ///
+    /// A longer incident is not blocked, it is re-requested — and re-requesting puts it
+    /// back through two-party approval, which is the control we actually want applied
+    /// repeatedly rather than waived once at the start.
+    /// </summary>
+    public const int MaxDurationMinutes = 8 * 60;
+
+    private static int ClampDuration(int durationMinutes) =>
+        durationMinutes <= 0 ? DefaultDurationMinutes : Math.Min(durationMinutes, MaxDurationMinutes);
+
     public PlatformSupportGrantView Request(
         string subjectTenantId, string requesterUserId, string reason, int durationMinutes)
     {
@@ -37,7 +57,7 @@ public sealed class PlatformSupportService
             SubjectTenantId = subjectTenantId,
             RequesterUserId = requesterUserId,
             Reason = reason,
-            RequestedDurationMinutes = durationMinutes <= 0 ? 60 : durationMinutes,
+            RequestedDurationMinutes = ClampDuration(durationMinutes),
             Status = SupportGrantStatus.Pending,
             CreatedAt = _clock.GetUtcNow(),
         };

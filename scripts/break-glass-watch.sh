@@ -23,18 +23,16 @@
 # script says so instead of inferring one from a failure.
 #
 # Usage:
-#   scripts/break-glass-watch.sh [environment] [days]
-#   scripts/break-glass-watch.sh production 30
+#   LC_SESSION='ses_…' scripts/break-glass-watch.sh [environment] [days]
+#   LC_SESSION='ses_…' scripts/break-glass-watch.sh production 30
 #
-# Requires the platform API to be reachable and an operator session or the admin token
-# itself (GET /api/platform/security-events needs platform.security_event.read).
+# LC_SESSION must be an OPERATOR session token for a platform user holding
+# platform.security_event.read (Auditor or Security Admin). It must NOT be the admin
+# token — see the note at the auth block below.
 set -euo pipefail
 
 ENVIRONMENT="${1:-staging}"
 WINDOW_DAYS="${2:-7}"
-SERVICE="${SERVICE:-Labs-MidWare}"
-
-command -v railway >/dev/null 2>&1 || { echo "railway CLI not found (run: railway login)"; exit 2; }
 
 case "$ENVIRONMENT" in
   production) BASE="${BASE:-https://lc.spottiq.com}" ;;
@@ -44,11 +42,42 @@ esac
 
 echo "→ break-glass readiness: $ENVIRONMENT ($BASE), window = last ${WINDOW_DAYS}d"
 
-TOKEN="${ADMIN_TOKEN:-$(railway variables --service "$SERVICE" --environment "$ENVIRONMENT" --json 2>/dev/null \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin).get("ControlPlane__AdminToken",""))')}"
-[ -n "$TOKEN" ] || { echo "could not obtain a token for $ENVIRONMENT"; exit 2; }
+# AUTHENTICATE AS AN OPERATOR, NEVER WITH THE ADMIN TOKEN.
+#
+# This script used to pull ControlPlane__AdminToken out of Railway and authenticate
+# with it. That is self-defeating in two separate ways.
+#
+# The fatal one: reading /api/platform/security-events passes through PlatformForbidden,
+# which records a `platform.break_glass.used` event before the handler runs. So every
+# run wrote a fresh break-glass event into the very window it was about to measure, then
+# read it back and concluded "still in use". The gate could never return ready — the
+# instrument destroyed its own measurement.
+#
+# The other: checking whether the god-mode credential is still in use, by using the
+# god-mode credential, would be the wrong posture even if it worked. Reviewing the audit
+# trail is an auditor's job and needs nothing more than platform.security_event.read.
+#
+# There is deliberately NO fallback to the admin token. A fallback would silently
+# reintroduce the bug on exactly the runs where it matters most.
+if [ -z "${LC_SESSION:-}" ]; then
+  cat >&2 <<'MSG'
+✗ LC_SESSION is not set — no verdict.
 
-events=$(curl -sS -m 30 -H "Authorization: Bearer $TOKEN" \
+  This check authenticates as an operator, not with the admin token (using the
+  credential under investigation to investigate itself makes every run report
+  "still in use", because the read records its own break-glass event).
+
+  Sign in as a platform user holding platform.security_event.read — the Auditor
+  or Security Admin role — and export the session token:
+
+      export LC_SESSION='ses_…'
+
+  Then re-run. The token is never needed for this check.
+MSG
+  exit 2
+fi
+
+events=$(curl -sS -m 30 -H "Authorization: Bearer $LC_SESSION" \
   "$BASE/api/platform/security-events?limit=500" 2>/dev/null || echo '[]')
 
 VERDICT_FILE=$(mktemp)

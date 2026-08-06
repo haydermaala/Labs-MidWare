@@ -28,16 +28,26 @@ public static partial class SupportAccessLog
 
 /// <summary>
 /// Break-glass diagnostics. Use of the god-mode admin token is meant to be rare and
-/// reviewable, so every tenant-scoped call it makes is logged at Warning with the
-/// tenant and permission. If these lines appear in normal operation, the token is
-/// still doing routine work and is not yet ready to be withdrawn.
+/// reviewable, so every call it makes is logged at Warning. If these lines appear in
+/// normal operation, the token is still doing routine work and is not yet ready to be
+/// withdrawn.
+///
+/// This log line is for a human tailing the service. It is NOT the retirement gate:
+/// the log is a small rolling buffer with no guaranteed retention, so it cannot answer
+/// "has the token been used this month?". That question is answered from the
+/// append-only platform_security_events row written alongside this line — see
+/// Program.cs BreakGlass(...) and scripts/break-glass-watch.sh.
 /// </summary>
 public static partial class BreakGlassLog
 {
+    /// <param name="context">
+    /// What the token reached — "tenantId:permission.key" for a tenant-scoped call,
+    /// "platform:permission.key" for a platform one, or a bare endpoint key for the
+    /// direct-guard bootstrap endpoints.
+    /// </param>
     [LoggerMessage(
         Level = LogLevel.Warning,
-        Message = "break-glass: the platform admin token acted in tenant {TenantId} "
-                + "(permission {PermissionKey}) — no user identity is attached to this action")]
-    public static partial void TenantAccessedWithAdminToken(
-        ILogger logger, string tenantId, string permissionKey);
+        Message = "break-glass: the platform admin token acted on {Context} "
+                + "— no user identity is attached to this action")]
+    public static partial void UsedWithAdminToken(ILogger logger, string context);
 }
