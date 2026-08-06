@@ -23,12 +23,24 @@
 # script says so instead of inferring one from a failure.
 #
 # Usage:
-#   LC_SESSION='ses_…' scripts/break-glass-watch.sh [environment] [days]
-#   LC_SESSION='ses_…' scripts/break-glass-watch.sh production 30
+#   scripts/break-glass-watch.sh [environment] [days]
+#   scripts/break-glass-watch.sh production 30                  # token mode (degraded)
+#   LC_SESSION='ses_…' scripts/break-glass-watch.sh production 30   # operator mode
 #
-# LC_SESSION must be an OPERATOR session token for a platform user holding
-# platform.security_event.read (Auditor or Security Admin). It must NOT be the admin
-# token — see the note at the auth block below.
+# Two observer modes, and the difference is stated in the output every run:
+#
+#   OPERATOR (LC_SESSION set) — a session for a platform user holding
+#     platform.security_event.read (Auditor or Security Admin). Sound: the observer is a
+#     different principal from the subject, so nothing is excluded and nothing is blind.
+#
+#   TOKEN (fallback) — authenticates with the admin token. Reading the trail is itself a
+#     break-glass use, so this mode must discount `platform:platform.security_event.read`
+#     to avoid counting its own runs forever. That makes it BLIND to genuine token reads
+#     of the audit log. It still sees every mutation and every other permission, so it is
+#     useful — it is just weaker evidence, and it says so.
+#
+# Get a session token: sign in to the console as an Auditor/Security Admin, then in the
+# browser devtools console run  document.cookie.match(/lc_session=([^;]+)/)[1]
 set -euo pipefail
 
 ENVIRONMENT="${1:-staging}"
@@ -42,49 +54,68 @@ esac
 
 echo "→ break-glass readiness: $ENVIRONMENT ($BASE), window = last ${WINDOW_DAYS}d"
 
-# AUTHENTICATE AS AN OPERATOR, NEVER WITH THE ADMIN TOKEN.
+# CHOOSE AN OBSERVER.
 #
-# This script used to pull ControlPlane__AdminToken out of Railway and authenticate
-# with it. That is self-defeating in two separate ways.
+# Reading /api/platform/security-events passes through PlatformForbidden, which records a
+# `platform.break_glass.used` event before the handler runs. So when the observer IS the
+# admin token, every run writes a fresh event into the window it is about to measure and
+# then reads it back — the instrument destroys its own measurement, and the verdict is
+# "still in use" forever.
 #
-# The fatal one: reading /api/platform/security-events passes through PlatformForbidden,
-# which records a `platform.break_glass.used` event before the handler runs. So every
-# run wrote a fresh break-glass event into the very window it was about to measure, then
-# read it back and concluded "still in use". The gate could never return ready — the
-# instrument destroyed its own measurement.
-#
-# The other: checking whether the god-mode credential is still in use, by using the
-# god-mode credential, would be the wrong posture even if it worked. Reviewing the audit
-# trail is an auditor's job and needs nothing more than platform.security_event.read.
-#
-# There is deliberately NO fallback to the admin token. A fallback would silently
-# reintroduce the bug on exactly the runs where it matters most.
-if [ -z "${LC_SESSION:-}" ]; then
-  cat >&2 <<'MSG'
-✗ LC_SESSION is not set — no verdict.
+# An operator session avoids that entirely: different principal, nothing to discount.
+# When one is not available we fall back to the token and discount the one permission the
+# observer itself uses, which is honest but blind in that one spot. The mode is printed
+# on every run so a result is never read as stronger than it is.
+DISCOUNT_SELF_READS=0
+if [ -n "${LC_SESSION:-}" ]; then
+  OBSERVER="operator session"
+  AUTH="$LC_SESSION"
+else
+  OBSERVER="ADMIN TOKEN (degraded)"
+  DISCOUNT_SELF_READS=1
+  # Every failure here must land on "no verdict" (exit 2), never on a bare nonzero that
+  # set -e would surface as 1 — 1 means "the token is in use", and a lookup failure must
+  # not be able to impersonate that answer. Hence the guards and the `|| true`.
+  AUTH="${ADMIN_TOKEN:-}"
+  if [ -z "$AUTH" ] && command -v railway >/dev/null 2>&1; then
+    AUTH="$(railway variables --service "${SERVICE:-Labs-MidWare}" \
+      --environment "$ENVIRONMENT" --json 2>/dev/null \
+      | python3 -c 'import sys,json
+try: print(json.load(sys.stdin).get("ControlPlane__AdminToken",""))
+except Exception: print("")' 2>/dev/null || true)"
+  fi
+  if [ -z "$AUTH" ]; then
+    cat >&2 <<'MSG'
+✗ No observer credential — no verdict.
 
-  This check authenticates as an operator, not with the admin token (using the
-  credential under investigation to investigate itself makes every run report
-  "still in use", because the read records its own break-glass event).
+  Preferred: sign in to the console as a platform user holding
+  platform.security_event.read (Auditor or Security Admin), then in the browser
+  devtools console run
 
-  Sign in as a platform user holding platform.security_event.read — the Auditor
-  or Security Admin role — and export the session token:
+      document.cookie.match(/lc_session=([^;]+)/)[1]
+
+  and export it:
 
       export LC_SESSION='ses_…'
 
-  Then re-run. The token is never needed for this check.
+  Fallback: make the admin token reachable (railway login, or ADMIN_TOKEN=…).
+  That mode is blind to token reads of the audit log — see the header.
 MSG
-  exit 2
+    exit 2
+  fi
 fi
 
-events=$(curl -sS -m 30 -H "Authorization: Bearer $LC_SESSION" \
+echo "  observer: $OBSERVER"
+
+events=$(curl -sS -m 30 -H "Authorization: Bearer $AUTH" \
   "$BASE/api/platform/security-events?limit=500" 2>/dev/null || echo '[]')
 
 VERDICT_FILE=$(mktemp)
 trap 'rm -f "$VERDICT_FILE"' EXIT
 
 set +e
-printf '%s' "$events" | WINDOW_DAYS="$WINDOW_DAYS" VERDICT_FILE="$VERDICT_FILE" python3 -c '
+printf '%s' "$events" | WINDOW_DAYS="$WINDOW_DAYS" VERDICT_FILE="$VERDICT_FILE" \
+  DISCOUNT_SELF_READS="$DISCOUNT_SELF_READS" python3 -c '
 import json, os, sys
 
 from datetime import datetime, timedelta, timezone
@@ -106,7 +137,16 @@ def when(e):
     except Exception:
         return None
 
-uses = [e for e in events if e.get("kind") == "platform.break_glass.used"]
+SELF_READ = "platform:platform.security_event.read"
+discount = os.environ.get("DISCOUNT_SELF_READS") == "1"
+
+all_uses = [e for e in events if e.get("kind") == "platform.break_glass.used"]
+# In token mode the observer is the subject: this very request wrote a SELF_READ event,
+# and so did every previous run. Counting them would pin the verdict at "in use" forever
+# and say nothing about whether the token is doing real work. Discounting them is the
+# price of that mode, and it is the reason an operator session is preferred.
+uses = [e for e in all_uses if not (discount and e.get("detail") == SELF_READ)]
+discounted = len(all_uses) - len(uses)
 in_window = [e for e in uses if (w := when(e)) and w >= cutoff]
 oldest = min((w for e in events if (w := when(e))), default=None)
 
@@ -114,6 +154,8 @@ print(f"  audit events available : {len(events)}")
 print(f"  trail reaches back to  : {oldest.date() if oldest else 'unknown'}")
 print(f"  break-glass uses total : {len(uses)}")
 print(f"  break-glass in window  : {len(in_window)}")
+if discount:
+    print(f"  discounted (own reads) : {discounted}")
 
 if oldest and oldest > cutoff and len(events) >= 500:
     print()
@@ -136,6 +178,12 @@ print()
 print(f"✓ No break-glass use in the last {days}d. The token is a candidate for withdrawal.")
 print("  Confirm operator workflows were actually exercised in this period — a quiet")
 print("  window on an idle system is not evidence.")
+if discount:
+    print()
+    print("  ⚠ Observed with the ADMIN TOKEN, so token reads of the audit log itself were")
+    print("    discounted and are invisible here. Every mutation and every other")
+    print("    permission WAS counted. Before acting on this, re-run once with")
+    print("    LC_SESSION set — that mode discounts nothing.")
 verdict("ready")
 '
 set -e
