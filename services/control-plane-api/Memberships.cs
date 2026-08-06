@@ -244,6 +244,7 @@ public sealed class MembershipService
         }
         var previous = membership.Role;
         membership.Role = newRole;
+        RevokeRootAssignments(db, tenantId, userId);
         Audit(db, "membership.role_changed", tenantId, $"{userId}: {previous} -> {newRole}");
         db.SaveChanges();
         scope.Complete();
@@ -273,10 +274,51 @@ public sealed class MembershipService
             return ChangeResult.LastOwner;
         }
         membership.Active = false;
+        RevokeRootAssignments(db, tenantId, userId);
         Audit(db, "membership.removed", tenantId, $"{userId} ({membership.Role})");
         db.SaveChanges();
         scope.Complete();
         return ChangeResult.Ok;
+    }
+
+    /// <summary>
+    /// Revoke the caller's ROOT-scope role assignments in this tenant.
+    ///
+    /// Authorization runs against the UNION of the membership role and the caller's
+    /// persisted assignments (Program.cs RootScopeContext), and the union is permissive
+    /// — the strongest wins. A root-scope assignment is tenant-wide authority by
+    /// definition, so leaving one in place after a demotion or removal silently defeats
+    /// it: the member keeps everything the old role could do.
+    ///
+    /// That was not hypothetical. MembershipAssignmentBackfill gave every member at
+    /// startup a permanent root assignment mirroring their role (ExpiresAt null,
+    /// RevokedAt null), and neither of the callers below ever cleared it, so demotion
+    /// changed the membership row and nothing that was actually enforced.
+    ///
+    /// Deliberately ROOT-scope only. A grant on a sub-scope ("admin of this one site")
+    /// expresses a different intent from the root row that merely mirrors membership,
+    /// and a tenant-wide demotion must not silently destroy it. Both directions are
+    /// covered in StaleAssignmentTests.
+    ///
+    /// Runs inside the caller's transaction and tenant scope; the caller saves.
+    /// </summary>
+    private void RevokeRootAssignments(AppDbContext db, string tenantId, string userId)
+    {
+        var rootId = db.Scopes
+            .Where(s => s.TenantId == tenantId && s.ParentId == null)
+            .Select(s => s.Id)
+            .FirstOrDefault();
+        if (rootId is null)
+        {
+            return; // no persisted scope tree ⇒ membership is already the only source
+        }
+        var now = _clock.GetUtcNow();
+        foreach (var assignment in db.RoleAssignments.Where(a =>
+                     a.TenantId == tenantId && a.UserId == userId &&
+                     a.ScopeId == rootId && a.RevokedAt == null))
+        {
+            assignment.RevokedAt = now;
+        }
     }
 
     /// <summary>Create a single-use, 7-day invitation. Caller must already be

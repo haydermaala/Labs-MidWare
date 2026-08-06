@@ -27,6 +27,8 @@ public sealed class BreakGlassAuditTests : IClassFixture<EmailApiFactory>
 
     private sealed record SecurityEventDto(string Id, DateTimeOffset At, string Kind, string ActorUserId, string Detail);
     private sealed record TenantDto(string Id, string Name);
+    private sealed record UserDto(string Id, string Email);
+    private sealed record LoginDto(string SessionToken, UserDto User);
 
     private HttpClient Admin()
     {
@@ -35,14 +37,64 @@ public sealed class BreakGlassAuditTests : IClassFixture<EmailApiFactory>
         return c;
     }
 
+    private HttpClient Session(string token)
+    {
+        var c = _factory.CreateClient();
+        c.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        return c;
+    }
+
+    // An auditor session, NOT the token. This is load-bearing, not hygiene.
+    //
+    // The obvious way to write these tests is to read the trail with the admin client.
+    // That makes every one of them vacuous: reading /api/platform/security-events goes
+    // through PlatformForbidden, which records a break-glass event before the handler
+    // runs. So the "before" read and the "after" read each add one, and
+    // `after.Count > before` holds no matter what the endpoint under test does.
+    //
+    // It is the same trap that makes scripts/break-glass-watch.sh unable to return
+    // "ready": an instrument that authenticates with the credential it is measuring
+    // perturbs its own measurement. The observer must be a different principal.
+    private HttpClient? _auditor;
+
+    private async Task<HttpClient> Auditor()
+    {
+        if (_auditor is not null) return _auditor;
+
+        var email = $"auditor-{Guid.NewGuid():N}@example.test";
+        const string password = "correct horse battery staple";
+        var created = await Admin().PostAsJsonAsync("/api/platform/users", new { email, password });
+        var user = (await created.Content.ReadFromJsonAsync<UserDto>())!;
+        await Admin().PostAsJsonAsync("/api/platform/role-assignments",
+            new { userId = user.Id, role = PlatformRoles.Auditor });
+        var login = await _factory.CreateClient()
+            .PostAsJsonAsync("/api/auth/login", new { email, password });
+        var session = (await login.Content.ReadFromJsonAsync<LoginDto>())!.SessionToken;
+        return _auditor = Session(session);
+    }
+
     private async Task<List<SecurityEventDto>> BreakGlassEvents()
     {
-        // Read with a client that does NOT use the token, or the read itself would be
-        // the break-glass event we are counting. A platform-role session is the honest
-        // observer here; the fixture's admin read would perturb what it measures.
-        var all = await Admin().GetFromJsonAsync<List<SecurityEventDto>>(
+        var all = await (await Auditor()).GetFromJsonAsync<List<SecurityEventDto>>(
             "/api/platform/security-events?limit=500");
         return all!.Where(e => e.Kind == "platform.break_glass.used").ToList();
+    }
+
+    [Fact]
+    public async Task Observing_The_Trail_Does_Not_Add_To_It()
+    {
+        // The control for every other test in this file. Two observations with NOTHING
+        // in between must agree. If the observer records, this fails — and every
+        // "did X record?" assertion elsewhere would have been passing on the observer's
+        // own footprints rather than on X.
+        //
+        // This is also the precise defect in scripts/break-glass-watch.sh: it reads the
+        // trail using the admin token, so each run writes a break-glass event into the
+        // window it is about to measure and can never report a quiet window.
+        var first = (await BreakGlassEvents()).Count;
+        var second = (await BreakGlassEvents()).Count;
+
+        Assert.Equal(first, second);
     }
 
     [Fact]
