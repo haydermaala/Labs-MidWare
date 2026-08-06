@@ -45,7 +45,12 @@ if (postgres is not null)
 }
 else
 {
-    builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseInMemoryDatabase("labconnect-dev"));
+    // The in-memory store is keyed by name, and every host using the same name shares
+    // one database. Tests that assert on global, append-only tables (the platform
+    // security log especially) otherwise observe each other's writes and go flaky, so
+    // a test host can ask for its own by setting ControlPlane:InMemoryDatabaseName.
+    builder.Services.AddDbContextFactory<AppDbContext>(o => o.UseInMemoryDatabase(
+        builder.Configuration["ControlPlane:InMemoryDatabaseName"] ?? "labconnect-dev"));
     builder.Services.AddSingleton<IControlPlaneStore, InMemoryControlPlaneStore>();
 }
 builder.Services.AddSingleton<AuthService>();

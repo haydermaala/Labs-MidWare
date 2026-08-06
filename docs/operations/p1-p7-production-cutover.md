@@ -282,8 +282,10 @@ Before you can retire it you must mint a real Root Owner:
 > rather than showing empty sections, but the operational order still matters.
 
 > **Getting the `userId`.** There is no email→user lookup endpoint, so you cannot
-> resolve one from the console. Either capture the `id` from the `POST /api/admin/users`
-> response when the account is created, or read it once as the DB owner:
+> resolve one from the console. Either capture the `id` from the `POST /api/platform/users`
+> response when the account is created (Root-Owner-gated, `platform.user.create` —
+> prefer this over the legacy `POST /api/admin/users`, which is god-mode-token-only and
+> is being retired), or read it once as the DB owner:
 > `SELECT "Id" FROM users WHERE "Email" = lower('operator@example.com');`
 >
 > **The console will appear to go blank every 10 minutes.** Root Owner demands MFA

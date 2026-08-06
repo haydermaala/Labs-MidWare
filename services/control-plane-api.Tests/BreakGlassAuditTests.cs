@@ -19,11 +19,11 @@ namespace ControlPlane.Api.Tests;
 /// production, three successful platform calls produced zero events. These tests exist
 /// so it cannot happen again.
 /// </summary>
-public sealed class BreakGlassAuditTests : IClassFixture<EmailApiFactory>
+public sealed class BreakGlassAuditTests : IClassFixture<IsolatedApiFactory>
 {
-    private readonly EmailApiFactory _factory;
+    private readonly IsolatedApiFactory _factory;
 
-    public BreakGlassAuditTests(EmailApiFactory factory) => _factory = factory;
+    public BreakGlassAuditTests(IsolatedApiFactory factory) => _factory = factory;
 
     private sealed record SecurityEventDto(string Id, DateTimeOffset At, string Kind, string ActorUserId, string Detail);
     private sealed record TenantDto(string Id, string Name);

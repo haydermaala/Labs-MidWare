@@ -107,4 +107,43 @@ public sealed class DualIdentityTests : IClassFixture<EmailApiFactory>
         Assert.True(tenants!.Single(t => t.Id == tenant).Active,
             "the tenant was deactivated by a single party holding a single credential");
     }
+
+    private sealed record GrantDto(string Id, string SubjectTenantId, string Status, bool Active);
+
+    [Fact]
+    public async Task Support_Grants_Cannot_Be_Self_Approved_By_The_Token()
+    {
+        // The same bypass shape applied to support-access grants and to tenant
+        // offboarding, neither of which ever received the ApprovalGranted hardening that
+        // closed the single-call path on deactivation. They are closed here by the root
+        // fix rather than one at a time — worth asserting, because "fixing the root
+        // cause fixes the instances" is a claim, and an untested claim is a guess.
+        var tenant = (await (await Admin().PostAsJsonAsync("/api/tenants", new { name = "Support Co" }))
+            .Content.ReadFromJsonAsync<TenantDto>())!.Id;
+        var (_, session) = await NewUser();
+
+        var requested = await AdminWearing(session).PostAsJsonAsync("/api/platform/support-grants",
+            new { subjectTenantId = tenant, reason = "incident", durationMinutes = 60 });
+        Assert.Equal(HttpStatusCode.Accepted, requested.StatusCode);
+        var grant = (await requested.Content.ReadFromJsonAsync<GrantDto>())!;
+
+        // Approving must fail as same-party: both sides resolve to platform-admin.
+        var approved = await Admin().PostAsync(
+            $"/api/platform/support-grants/{grant.Id}/approve", null);
+        Assert.NotEqual(HttpStatusCode.NoContent, approved.StatusCode);
+
+        var grants = await Admin().GetFromJsonAsync<List<GrantDto>>("/api/platform/support-grants");
+        Assert.DoesNotContain(grants!, g => g.Id == grant.Id && g.Active);
+    }
+
+    [Fact]
+    public void Support_Grant_Duration_Is_Capped()
+    {
+        // A grant is cross-tenant access to another tenant's data. The duration was
+        // floored but never capped, so a ten-year grant was accepted — indistinguishable
+        // from the standing access that support grants exist to replace.
+        Assert.Equal(PlatformSupportService.MaxDurationMinutes,
+            Math.Min(5_256_000, PlatformSupportService.MaxDurationMinutes));
+        Assert.True(PlatformSupportService.MaxDurationMinutes <= 24 * 60);
+    }
 }

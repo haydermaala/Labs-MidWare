@@ -50,9 +50,25 @@ public sealed class EnrollmentTests : IClassFixture<ApiFactory>
     [Fact]
     public async Task Management_Requires_Admin_Token()
     {
+        // This asserted only that an anonymous client gets 401, which would hold
+        // identically if the admin-token feature were deleted outright — it proved
+        // "unauthenticated is rejected", not "this token is what authorizes it".
+        // A gate is only shown to work by exercising both sides of it.
         var anon = _factory.CreateClient();
-        var res = await anon.PostAsJsonAsync("/api/tenants", new { name = "Nope" });
-        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await anon.PostAsJsonAsync("/api/tenants", new { name = "Nope" })).StatusCode);
+
+        var wrong = _factory.CreateClient();
+        wrong.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "not-the-admin-token");
+        Assert.Equal(HttpStatusCode.Unauthorized,
+            (await wrong.PostAsJsonAsync("/api/tenants", new { name = "Nope" })).StatusCode);
+
+        var admin = _factory.CreateClient();
+        admin.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", "test-admin");
+        Assert.Equal(HttpStatusCode.Created,
+            (await admin.PostAsJsonAsync("/api/tenants", new { name = "Yes" })).StatusCode);
     }
 
     [Fact]
