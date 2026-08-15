@@ -8,13 +8,13 @@
 
   <ItemGroup>
     <PackageReference Include="MailKit" Version="4.17.0" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.11" />
     <!-- Pin Relational to match EF Core/Design; Npgsql's transitive floor is older,
          and Design (PrivateAssets) doesn't propagate its 10.0.10 constraint to
          referencing projects. This explicit, non-private reference unifies the
          version across the API and its test project (avoids MSB3277). -->
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.11" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.11">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
