@@ -25,7 +25,8 @@
 # Usage:
 #   scripts/break-glass-watch.sh [environment] [days]
 #   scripts/break-glass-watch.sh production 30                  # token mode (degraded)
-#   LC_SESSION='ses_…' scripts/break-glass-watch.sh production 30   # operator mode
+#   export LC_SESSION=<paste the lc_session cookie value>   # then:
+#   scripts/break-glass-watch.sh production 30                  # operator mode
 #
 # Two observer modes, and the difference is stated in the output every run:
 #
@@ -39,8 +40,9 @@
 #     of the audit log. It still sees every mutation and every other permission, so it is
 #     useful — it is just weaker evidence, and it says so.
 #
-# Get a session token: sign in to the console as an Auditor/Security Admin, then in the
-# browser devtools console run  document.cookie.match(/lc_session=([^;]+)/)[1]
+# Get a session token: sign in to the console as an Auditor/Security Admin, then copy the
+# lc_session cookie from DevTools > Application > Cookies > lc_session > Value. It is an
+# HttpOnly cookie, so document.cookie cannot read it — the DevTools cookie inspector can.
 set -euo pipefail
 
 ENVIRONMENT="${1:-staging}"
@@ -107,14 +109,15 @@ except Exception: print("")' 2>/dev/null || true)"
 ✗ No observer credential — no verdict.
 
   Preferred: sign in to the console as a platform user holding
-  platform.security_event.read (Auditor or Security Admin), then in the browser
-  devtools console run
+  platform.security_event.read (Auditor or Security Admin), then copy the session
+  cookie from
 
-      document.cookie.match(/lc_session=([^;]+)/)[1]
+      DevTools > Application > Cookies > lc_session > Value
 
-  and export it:
+  It is HttpOnly, so document.cookie cannot read it; the DevTools cookie
+  inspector can. Then export it (use your real value, not this placeholder):
 
-      export LC_SESSION='ses_…'
+      export LC_SESSION=ses_xxxxxxxx
 
   Fallback: make the admin token reachable (railway login, or ADMIN_TOKEN=…).
   That mode is blind to token reads of the audit log — see the header.

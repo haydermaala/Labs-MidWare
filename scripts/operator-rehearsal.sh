@@ -27,14 +27,28 @@
 # it creates is named with the run stamp so it can be identified and cleaned up.
 #
 # Usage:
-#   LC_SESSION='ses_…' scripts/operator-rehearsal.sh staging          # rehearse first
-#   LC_SESSION='ses_…' scripts/operator-rehearsal.sh production
-#   LC_SESSION='ses_…' scripts/operator-rehearsal.sh production --dry-run
+#   export LC_SESSION=<paste the lc_session cookie value>   # then:
+#   scripts/operator-rehearsal.sh staging          # rehearse somewhere safe first
+#   scripts/operator-rehearsal.sh production
+#   scripts/operator-rehearsal.sh production --dry-run
+#
+# The export is shown separately on purpose: a usage line containing a placeholder gets
+# copied whole, and `LC_SESSION='ses_…'` then arrives as a literal credential.
 #
 # LC_SESSION must be a ROOT OWNER session (the workflows below span provisioning, role
 # management and membership seeding; only Root Owner holds all of them). Root Owner also
 # requires MFA and re-authentication every 10 minutes — if steps start failing with
 # stepUp, sign in again and re-run.
+#
+# GETTING THE SESSION TOKEN. The lc_session cookie is HttpOnly, so document.cookie cannot
+# read it — the browser deliberately hides it from JavaScript. Use the DevTools cookie
+# inspector, which can show HttpOnly values:
+#
+#   Chrome/Edge : DevTools > Application > Storage > Cookies > <site> > lc_session > Value
+#   Firefox     : DevTools > Storage > Cookies > <site> > lc_session
+#   Safari      : Develop > Show Web Inspector > Storage > Cookies > lc_session
+#
+# The value starts with `ses_`. Copy it whole.
 set -uo pipefail
 
 ENVIRONMENT="${1:-staging}"
@@ -53,9 +67,27 @@ if [ -n "${ADMIN_TOKEN:-}" ]; then
   exit 2
 fi
 if [ -z "${LC_SESSION:-}" ]; then
-  echo "✗ LC_SESSION is not set. Sign in to the console as Root Owner (MFA), then:" >&2
-  echo "      document.cookie.match(/lc_session=([^;]+)/)[1]" >&2
-  echo "      export LC_SESSION='ses_…'" >&2
+  echo "✗ LC_SESSION is not set. Sign in to the console as Root Owner (MFA), then copy" >&2
+  echo "  the session cookie from DevTools > Application > Cookies > lc_session > Value" >&2
+  echo "  (it is HttpOnly, so document.cookie cannot read it), and export it:" >&2
+  echo "      export LC_SESSION=ses_xxxxxxxx      # your real value" >&2
+  exit 2
+fi
+
+# Reject the placeholder before touching the network. It is copied from documentation
+# more often than anyone would like, and the resulting uniform 401s look exactly like a
+# real finding.
+case "$LC_SESSION" in
+  "ses_…"|"ses_..."|"ses_"|"<session>"|"YOUR_SESSION")
+    echo "✗ LC_SESSION is still the placeholder from the docs, not a real token." >&2
+    echo "  Get the real one: DevTools > Application > Cookies > lc_session > Value." >&2
+    echo "  (document.cookie cannot read it — the cookie is HttpOnly.)" >&2
+    exit 2 ;;
+esac
+if [ "${LC_SESSION#ses_}" = "$LC_SESSION" ]; then
+  echo "✗ LC_SESSION does not start with 'ses_', so it is not a session token." >&2
+  echo "  If you pasted the admin token: that is the credential this rehearsal exists to" >&2
+  echo "  prove unnecessary, and using it here would prove the opposite." >&2
   exit 2
 fi
 
@@ -127,15 +159,62 @@ try: print(len([e for e in json.load(sys.stdin) if e.get("kind") == "platform.br
 except Exception: print(-1)' < "$BODY_FILE" 2>/dev/null || echo -1
 }
 BG_BEFORE=-1
-[ "$DRY_RUN" = "0" ] && BG_BEFORE="$(bg_count)"
 
-# 0. Who am I? Confirms the session is a platform user and shows the roles in play.
-step "whoami reports platform roles" 200 GET "/api/platform/whoami"
-if [ "$DRY_RUN" = "0" ] && [ -n "${LAST_BODY:-}" ]; then
-  echo "  roles: $(printf '%s' "$LAST_BODY" | python3 -c 'import sys,json
-try: print(",".join(json.load(sys.stdin).get("roles",[])) or "(none)")
-except Exception: print("(unreadable)")')"
+# PREFLIGHT — establish that the session works BEFORE claiming anything about workflows.
+#
+# Without this, an unauthenticated session produced six identical 401s and the summary
+# announced "6 workflow(s) failed ... Do NOT retire the token". Nothing had been tested.
+# That is a confident wrong answer of exactly the kind this whole effort exists to
+# prevent: a broken check must report NO VERDICT (exit 2), never a finding (exit 1).
+#
+# whoami distinguishes the three cases precisely. It returns 401 only when the session
+# does not authenticate at all; a valid session with no platform roles still gets 200
+# with an empty list.
+if [ "$DRY_RUN" = "0" ]; then
+  api GET "/api/platform/whoami"
+  case "$HTTP_STATUS" in
+    200) : ;;
+    401)
+      echo "✗ The session did not authenticate — NOTHING WAS TESTED." >&2
+      echo >&2
+      echo "  This is not a finding about the admin token. It means LC_SESSION is not a" >&2
+      echo "  valid session: wrong value, expired, or logged out elsewhere." >&2
+      echo >&2
+      echo "  Get a fresh one: sign in to $BASE as Root Owner (MFA), then" >&2
+      echo "  DevTools > Application > Cookies > lc_session > Value. It starts with ses_." >&2
+      echo "  document.cookie cannot read it — the cookie is HttpOnly." >&2
+      exit 2 ;;
+    000)
+      echo "✗ Could not reach $BASE — NOTHING WAS TESTED." >&2
+      exit 2 ;;
+    *)
+      echo "✗ Unexpected $HTTP_STATUS from whoami — NOTHING WAS TESTED." >&2
+      head -c 300 "$BODY_FILE" >&2; echo >&2
+      exit 2 ;;
+  esac
+
+  ROLES="$(python3 -c 'import sys,json
+try: print(",".join(json.load(sys.stdin).get("roles",[])))
+except Exception: print("")' < "$BODY_FILE" 2>/dev/null)"
+  if [ -z "$ROLES" ]; then
+    echo "✗ The session authenticates but holds NO platform roles — nothing was tested." >&2
+    echo "  Sign in as the Root Owner account, not an ordinary tenant user." >&2
+    exit 2
+  fi
+  case "$ROLES" in
+    *platform-root-owner*) : ;;
+    *)
+      echo "✗ The session holds [$ROLES] but not platform-root-owner — nothing was tested." >&2
+      echo "  These workflows span provisioning, role management and membership seeding;" >&2
+      echo "  only Root Owner holds all three. Sign in as Root Owner and re-run." >&2
+      exit 2 ;;
+  esac
+  echo "  preflight: session authenticates, roles = $ROLES"
+
+  BG_BEFORE="$(bg_count)"
 fi
+
+# (whoami is covered by the preflight above.)
 
 # 1. Read surfaces — the day-to-day operator views.
 step "list tenants"          200 GET "/api/platform/tenants"
@@ -227,8 +306,13 @@ fi
 
 echo
 if [ "$FAIL" -gt 0 ]; then
-  echo "✗ $FAIL workflow(s) failed. Each is a dependency on the admin token, a missing"
-  echo "  platform role, or an expired step-up. Do NOT retire the token until they pass."
+  echo "✗ $FAIL workflow(s) failed after the session was verified working."
+  echo
+  echo "  A 403 is the meaningful case: that workflow cannot be done through a named"
+  echo "  platform role, so it still depends on the token and retiring it would break"
+  echo "  the workflow — unless it is a stepUp, which just means the 10-minute Root"
+  echo "  Owner freshness window lapsed mid-run. Re-authenticate and re-run to tell"
+  echo "  those apart. Other codes are ordinary bugs in the workflow itself."
   exit 1
 fi
 
