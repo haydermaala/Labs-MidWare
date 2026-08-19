@@ -22,7 +22,12 @@ Two findings outside the token's scope also came out of this audit and are fixed
 - **Demotion did not demote.** Root-scope role assignments survived `ChangeRole` and
   `RemoveMember` and were unioned back into every authorization decision, so a demoted
   member kept their old authority. No token involved; it affected ordinary tenants and
-  would have survived retirement entirely. See `StaleAssignmentTests`.
+  would have survived retirement entirely. See `StaleAssignmentTests`, and
+  `SupportGrantScopeTests` for the support-grant composition it also reopened.
+- **No platform static separation of duty.** One human could hold both
+  `platform-support-engineer` and `platform-security-admin` — the requester/approver pair
+  — making the dynamic check a formality. `PlatformSeparationOfDuty` now refuses such a
+  grant at the only path that confers a platform role.
 - **Cross-class test pollution.** Every test host shared one in-memory database, so any
   assertion about a global append-only table was really measuring the rest of the suite.
   `IsolatedApiFactory` gives such tests their own.
@@ -197,56 +202,46 @@ them matters because two of them would have redirected effort away from the real
 
 ---
 
-## 5. Open questions and unverified residue
+## 5. Open questions — all five resolved (2026-08-06)
 
-Stated plainly; none of these were resolved by this audit.
+The audit left five residues. Each is now closed, and each closure was checked with a
+negative control: the fix was reverted and the new test confirmed to fail. A guard never
+seen to fail is not evidence.
 
-1. **Stale root role-assignments survive demotion and removal — and this is not a token issue at
-   all.** `MembershipAssignmentBackfill.Apply` creates a permanent root-scope assignment
-   (`ExpiresAt = null, RevokedAt = null`) for every active member at startup
-   (MembershipAssignmentBackfill.cs:85-96). Neither `Memberships.ChangeRole` (Memberships.cs:246
-   — mutates the membership row only) nor `RemoveMember` (:275 — flips `Active` only) revokes it,
-   and `RoleGrantService.ActiveAssignmentsFor` returns every row with `RevokedAt == null`
-   (RoleGrantService.cs:121-132), which `RootScopeContext` unions into the decision
-   (Program.cs:1225-1226). **Verified (EXEC):** a member demoted `owner → read-only` through
-   `POST /api/tenants/{id}/members/{uid}/role` still successfully renamed the tenant, an
-   owner-only action; a control user demoted identically but with no backfilled assignment was
-   correctly refused 403. The backfill's own comment concedes the gap
-   (MembershipAssignmentBackfill.cs:14-15: "Keeping membership role changes in sync afterwards is
-   the engine-wiring slice's concern"). **This is an independent RBAC defect that survives token
-   retirement and should be tracked separately — it is arguably more urgent than anything in §2,
-   because it needs no privileged credential to exploit.**
-2. **The support-grant × stale-assignment composition was not executed.** Both halves are
-   verified (§5.1 above and B4), and reading Program.cs:1168-1177 → :1225-1226 says a *removed*
-   member holding a stale `owner` root assignment who is handed a support grant would authorize
-   as **owner**, not read-only, including mutations — defeating "read-only and nothing more"
-   (Program.cs:1160-1165). **INFER only.** Worth one targeted test before anyone relies on the
-   read-only promise.
-3. **No platform static-SoD enforcement exists.** Nothing prevents one human from holding both
-   `platform-support-engineer` and `platform-security-admin` (PlatformRoles.cs:53-65), which is
-   the requester/approver pair. `PlatformAdminService.Grant` (Program.cs:751-763) applies no
-   conflict check. Unverified whether this is deliberate deferral or an oversight.
-4. **`No_Unaudited_IsAdmin_Call_Sites` has two structural holes.** It regexes `\bIsAdmin\s*\(`
-   over `Program.cs` **only** (BreakGlassAuditTests.cs:118), so it cannot see a new file, and it
-   cannot see an inline re-implementation such as
-   `req.Headers.Authorization.ToString() == $"Bearer {adminToken}"`. Its `ActorRole` exemption
-   (:133) rests on a comment (Program.cs:423-426) asserting every caller already passed
-   `Forbidden` — true for all five call sites today (:451, :458, :466, :602, :633), enforced by
-   nothing.
-5. **Whether the production token value begins with `ses_`.** If it did, `CurrentUser` would take
-   the header branch (Program.cs:1091) and the B3/B7 dual-identity trick would behave differently.
-   Overwhelmingly unlikely, and it does not change the fix, but it was not checked against the
-   live value and cannot be from this repo.
-6. **Whether any human or automation outside this repo calls the token-only routes.** Nothing in
-   the repo does (§3.4), but that is an argument about this tree, not about production traffic —
-   and answering it for real is exactly what B1 blocks.
-7. **Production `platform_security_events` volume and reach-back.** The B1 self-observation
-   means every historical run of the watch script has also polluted the trail. Before trusting
-   any window, someone should check how many of the existing `platform.break_glass.used` rows
-   have detail `platform:platform.security_event.read` — those are the instrument's own
-   footprints, not real use.
+1. **Stale root role-assignments survived demotion and removal.** Confirmed and fixed.
+   `ChangeRole`/`RemoveMember` now revoke root-scope assignments in the same transaction
+   (`Memberships.RevokeRootAssignments`). Root scope only — a sub-scope grant is a
+   different intent and must survive a tenant-wide demotion. `StaleAssignmentTests` asserts
+   both directions. This was the most serious finding in the audit and had nothing to do
+   with the token: it needed no privileged credential and would have survived retirement.
 
----
+2. **The support-grant × stale-assignment composition** was INFER; it is now EXEC.
+   `SupportGrantScopeTests` runs the whole path: a member with a stale root `tenant-admin`
+   assignment is removed, granted an approved support grant, and must get read-only.
+   Reverting the `RemoveMember` half makes it fail with the removed member successfully
+   creating an invitation — so the composed escalation was real, and is closed.
+
+3. **No platform static separation of duty.** Fixed. `PlatformSeparationOfDuty` declares
+   the conflicting pairs and `PlatformAdminService.Grant` refuses a role that would newly
+   breach one, returning 409 with the rule name and auditing the refusal as
+   `platform.role.grant_refused_sod`. One pair today: support-grant request vs approve.
+   Tenant offboarding is deliberately absent — both its sides are gated by the same
+   permission, so there is no pair to separate and its protection is dynamic SoD alone.
+   Only NEW breaches block, so adding a rule cannot freeze existing accounts out of
+   unrelated grants, and Root Owner is exempt as the documented break-glass role.
+
+4. **The structural guard had two holes.** Fixed, and split into three tests that each
+   scan the whole service rather than `Program.cs` alone:
+   `No_Unaudited_IsAdmin_Call_Sites` (a gate added in a new file is now visible),
+   `No_Inline_Reimplementation_Of_The_Token_Check` (the token VALUE may be touched only
+   where it is read from configuration and inside `IsAdmin`, so an inline
+   `== $"Bearer {adminToken}"` cannot authorize without recording), and
+   `Every_ActorRole_Caller_Has_Already_Passed_Forbidden`, which enforces the premise the
+   `ActorRole` exemption rests on instead of asserting it in a comment.
+
+5. **Whether the production token begins with `ses_`.** Checked against the live value
+   without exposing it: it does not (48 chars). So `CurrentUser` took the cookie branch
+   exactly as the B3/B7 analysis assumed, and the dual-identity fix applies as reasoned.
 
 ## 6. Retirement sequence
 
