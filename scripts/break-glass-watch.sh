@@ -125,8 +125,17 @@ fi
 
 echo "  observer: $OBSERVER"
 
-events=$(curl -sS -m 30 -H "Authorization: Bearer $AUTH" \
-  "$BASE/api/platform/security-events?limit=500" 2>/dev/null || echo '[]')
+# A failed fetch is NOT a quiet window. Previously this fell back to `[]`, which the
+# analysis would read as "nothing recorded" and report as inconclusive-or-ready — an
+# unreachable API is a broken check (exit 2), never a finding about the token.
+if ! events=$(curl -sS -m 30 -H "Authorization: Bearer $AUTH" \
+  "$BASE/api/platform/security-events?limit=500" 2>/dev/null); then
+  echo
+  echo "✗ Could not reach $BASE — no verdict."
+  echo "  This says nothing about whether the token is in use. Check connectivity and"
+  echo "  that the observer credential is still valid, then re-run."
+  exit 2
+fi
 
 VERDICT_FILE=$(mktemp)
 trap 'rm -f "$VERDICT_FILE"' EXIT
@@ -186,12 +195,33 @@ oldest = min((w for e in events if (w := when(e))), default=None)
 # a narrowed window is never mistaken for a quiet one.
 before_clock = [e for e in uses if (w := when(e)) and w < cutoff] if since else []
 
+# Did anything happen in this window at all?
+#
+# "No break-glass use" is only evidence if the system was actually being operated. On an
+# idle window the token has nothing to be used FOR, so a quiet result says nothing about
+# whether a workflow still depends on it -- and that is the exact question gating removal
+# of the only credential that can reach production.
+#
+# Every non-break-glass platform security event is an operator doing platform work
+# through a named role: role grants, support decisions, tenant lifecycle, user creation.
+# That is the right denominator, because the remaining reach of the token is
+# platform-shaped. Zero of them means the window proves nothing, and that is enforced
+# below rather than printed as advice.
+activity = [e for e in events
+            if e.get("kind") != "platform.break_glass.used"
+            and (w := when(e)) and w >= cutoff]
+
 print(f"  audit events available : {len(events)}")
-print(f"  trail reaches back to  : {oldest.date() if oldest else 'unknown'}")
+# NB: double quotes only. This whole block is inside a shell single-quoted string, so a
+# single quote here is stripped by the shell and Python sees a bare name -- which is a
+# NameError, but only on the empty-trail branch, so it hid until a fresh environment.
+oldest_label = oldest.date() if oldest else "unknown"
+print(f"  trail reaches back to  : {oldest_label}")
 print(f"  break-glass uses total : {len(uses)}")
 print(f"  break-glass in window  : {len(in_window)}")
 if discount:
     print(f"  discounted (own reads) : {discounted}")
+print(f"  operator activity      : {len(activity)} platform event(s) in window")
 if since:
     print(f"  clock starts           : {since.isoformat()}")
     print(f"  excluded as pre-clock  : {len(before_clock)}")
@@ -213,6 +243,16 @@ if in_window:
     print("  above onto a named platform role first.")
     verdict("in-use"); sys.exit(1)
 
+if not activity:
+    print()
+    print("  ⚠ No operator activity in this window either -- nothing was done through a")
+    print("    named platform role. A quiet window on an idle system is not evidence that")
+    print("    the token is unused; it only shows that nobody was working. Exercise the")
+    print("    real operator workflows, then re-run.")
+    print()
+    print("✗ INCONCLUSIVE. Not a green light.")
+    verdict("inconclusive"); sys.exit(1)
+
 print()
 if since:
     print(f"✓ No break-glass use since {since.isoformat()}. The token is a candidate for")
@@ -225,8 +265,8 @@ if since:
             print("      %s  %s" % (e.get("at","")[:19], e.get("detail","")))
 else:
     print(f"✓ No break-glass use in the last {days}d. The token is a candidate for withdrawal.")
-print("  Confirm operator workflows were actually exercised in this period — a quiet")
-print("  window on an idle system is not evidence.")
+print(f"  {len(activity)} operator action(s) happened in this window through named platform")
+print("  roles, and none of them needed the token.")
 if discount:
     print()
     print("  ⚠ Observed with the ADMIN TOKEN, so token reads of the audit log itself were")
