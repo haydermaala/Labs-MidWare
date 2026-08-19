@@ -52,7 +52,8 @@ SINCE=2026-08-06T10:00:00Z scripts/break-glass-watch.sh production 30
 ```
 
 Set `LC_SESSION` first for the sound reading — sign in as an Auditor or Security Admin and
-take the cookie (`document.cookie.match(/lc_session=([^;]+)/)[1]`). Without it the script
+copy the `lc_session` cookie from DevTools > Application > Cookies > lc_session > Value
+(it is HttpOnly, so `document.cookie` cannot read it — the DevTools cookie inspector can). Without it the script
 still runs, in the degraded token mode described in B1. Exit codes: `0` ready, `1` in use
 or inconclusive, `2` no verdict reached. `2` is deliberately distinct from `1` — a checker
 that fails must not be mistakable for a checker that found the token in use.
