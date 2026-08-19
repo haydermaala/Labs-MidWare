@@ -759,6 +759,17 @@ app.MapPost("/api/platform/role-assignments",
     if (PlatformForbidden(req, auth, PlatformPermissions.RoleManage) is { } denied) return denied;
     var granterUserId = CurrentUser(req, auth)?.User.Id ?? "platform-admin";
     var result = platformAdmin.Grant(granterUserId, body.UserId, body.Role, body.ExpiresAt, body.Reason);
+    if (result.Outcome == PlatformAdminService.GrantOutcome.SodViolation)
+    {
+        // 409, not 400: the request is well-formed and the role is real. It is the
+        // resulting combination of duties that is refused, and the caller needs to know
+        // which rule so they can split the duty across two people instead of guessing.
+        platformAudit.Record("platform.role.grant_refused_sod", granterUserId,
+            $"{body.Role} -> {body.UserId}: {string.Join(", ", result.ViolatedRules ?? [])}");
+        return Results.Json(
+            new { error = "separation of duty", rules = result.ViolatedRules },
+            statusCode: StatusCodes.Status409Conflict);
+    }
     if (result.Outcome != PlatformAdminService.GrantOutcome.Ok)
     {
         return Results.BadRequest(new { error = "unknown platform role" });

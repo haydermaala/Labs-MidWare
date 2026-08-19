@@ -155,46 +155,143 @@ public sealed class BreakGlassAuditTests : IClassFixture<IsolatedApiFactory>
         Assert.All(events, e => Assert.False(string.IsNullOrWhiteSpace(e.Detail)));
     }
 
+    // ---- structural guards -------------------------------------------------
+    //
+    // The behavioural tests above sample a few endpoints. These enforce the invariant
+    // across the whole service, because sampling is what let the original defect ship:
+    // Forbidden was fixed and its twin PlatformForbidden was not, and nothing noticed.
+
+    private static string ServiceRoot() =>
+        Path.Combine(RepoRoot(), "services", "control-plane-api");
+
+    /// <summary>Every non-generated C# file in the service.</summary>
+    private static IEnumerable<string> ServiceSources() =>
+        Directory.EnumerateFiles(ServiceRoot(), "*.cs", SearchOption.AllDirectories)
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .Where(f => !f.Contains($"{Path.DirectorySeparatorChar}Migrations{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            .OrderBy(f => f, StringComparer.Ordinal);
+
     /// <summary>
-    /// The structural guard. The behavioural tests above sample a few endpoints; this
-    /// one enforces the invariant across the whole file, so a NEW token-accepting path
-    /// cannot be added without either recording or consciously amending this list.
+    /// `BreakGlass(req, context)` both accepts the token and records the use, so it is the
+    /// only sanctioned way to ask "is this the token?" at an authorization site. Raw
+    /// `IsAdmin` has exactly three legitimate uses, all in Program.cs and all listed here.
     ///
-    /// `BreakGlass(...)` both accepts and records, so it is the only sanctioned way to
-    /// ask "is this the token?" at an authorization site. Raw `IsAdmin` has exactly two
-    /// legitimate uses, both listed below.
+    /// Scans the WHOLE service, not just Program.cs — the earlier version only read
+    /// Program.cs and so could not have seen a gate added in a new file.
     /// </summary>
     [Fact]
     public void No_Unaudited_IsAdmin_Call_Sites()
     {
-        var program = Path.Combine(RepoRoot(), "services", "control-plane-api", "Program.cs");
-        var lines = File.ReadAllLines(program);
-
         var offenders = new List<string>();
-        for (var i = 0; i < lines.Length; i++)
+
+        foreach (var file in ServiceSources())
         {
-            if (!Regex.IsMatch(lines[i], @"\bIsAdmin\s*\(")) continue;
+            var lines = File.ReadAllLines(file);
+            var name = Path.GetFileName(file);
+            var isProgram = name == "Program.cs";
 
-            // The definition itself.
-            if (Regex.IsMatch(lines[i], @"bool\s+IsAdmin\s*\(")) continue;
-            // The single call inside BreakGlass, which is the recording wrapper.
-            if (lines[i].Contains("if (!IsAdmin(req))", StringComparison.Ordinal)
-                && Within(lines, i, "bool BreakGlass(", 12)) continue;
-            // ActorRole: its callers have already passed Forbidden on this same request,
-            // which recorded. Recording again would double-count one use.
-            if (Within(lines, i, "string ActorRole(", 12)) continue;
-            // CurrentUser: an identity question, not an authorization site. It asks
-            // "does this request have a session identity?" and the answer for a
-            // break-glass request is no. The gate on the same request records the use.
-            if (Within(lines, i, "? CurrentUser(HttpRequest", 22)) continue;
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!Regex.IsMatch(lines[i], @"\bIsAdmin\s*\(")) continue;
+                if (Regex.IsMatch(lines[i], @"bool\s+IsAdmin\s*\(")) continue; // the definition
 
-            offenders.Add($"Program.cs:{i + 1}: {lines[i].Trim()}");
+                if (isProgram)
+                {
+                    // Inside BreakGlass — the recording wrapper itself.
+                    if (lines[i].Contains("if (!IsAdmin(req))", StringComparison.Ordinal)
+                        && Within(lines, i, "bool BreakGlass(", 12)) continue;
+                    // ActorRole — its callers already passed Forbidden on this request,
+                    // which recorded. Recording again double-counts one use. That premise
+                    // is enforced by Every_ActorRole_Caller_Has_Already_Passed_Forbidden.
+                    if (Within(lines, i, "string ActorRole(", 12)) continue;
+                    // CurrentUser — an identity question, not an authorization site.
+                    if (Within(lines, i, "? CurrentUser(HttpRequest", 22)) continue;
+                }
+
+                offenders.Add($"{name}:{i + 1}: {lines[i].Trim()}");
+            }
         }
 
         Assert.True(offenders.Count == 0,
             "these sites accept the admin token without recording a break-glass event, "
             + "which makes scripts/break-glass-watch.sh report a false all-clear. Use "
             + "BreakGlass(req, context) instead of IsAdmin(req):\n  "
+            + string.Join("\n  ", offenders));
+    }
+
+    /// <summary>
+    /// The other way to bypass the wrapper: skip `IsAdmin` and compare the header to the
+    /// captured token yourself. `adminToken` is a local in a top-level program, so it is
+    /// in scope for the entire file and an inline `== $"Bearer {adminToken}"` would
+    /// authorize without recording — invisible to the call-site scan above.
+    ///
+    /// So the token VALUE may be touched in exactly two places: where it is read from
+    /// configuration, and inside IsAdmin.
+    /// </summary>
+    [Fact]
+    public void No_Inline_Reimplementation_Of_The_Token_Check()
+    {
+        var offenders = new List<string>();
+
+        foreach (var file in ServiceSources())
+        {
+            var lines = File.ReadAllLines(file);
+            var name = Path.GetFileName(file);
+
+            for (var i = 0; i < lines.Length; i++)
+            {
+                if (!Regex.IsMatch(lines[i], @"\badminToken\b")) continue;
+                if (lines[i].TrimStart().StartsWith("//", StringComparison.Ordinal)) continue;
+                // The single read from configuration.
+                if (Regex.IsMatch(lines[i], @"var\s+adminToken\s*=")) continue;
+                // The body of IsAdmin.
+                if (Within(lines, i, "bool IsAdmin(", 4)) continue;
+
+                offenders.Add($"{name}:{i + 1}: {lines[i].Trim()}");
+            }
+        }
+
+        Assert.True(offenders.Count == 0,
+            "the admin token value is referenced outside its declaration and IsAdmin. An "
+            + "inline header comparison authorizes without recording a break-glass event, "
+            + "which the call-site scan cannot see. Route it through BreakGlass:\n  "
+            + string.Join("\n  ", offenders));
+    }
+
+    /// <summary>
+    /// ActorRole is exempt from the recording rule only because every caller has already
+    /// passed Forbidden on the same request, which recorded the use. That was asserted in
+    /// a comment and enforced by nothing. It is enforced here.
+    /// </summary>
+    [Fact]
+    public void Every_ActorRole_Caller_Has_Already_Passed_Forbidden()
+    {
+        var lines = File.ReadAllLines(Path.Combine(ServiceRoot(), "Program.cs"));
+        var offenders = new List<string>();
+
+        for (var i = 0; i < lines.Length; i++)
+        {
+            if (!Regex.IsMatch(lines[i], @"\bActorRole\s*\(\s*req\b")) continue;
+            if (Within(lines, i, "string ActorRole(", 12)) continue; // the definition
+
+            // Walk back to the top of the enclosing endpoint registration and require a
+            // Forbidden(req, …) gate somewhere between it and this call.
+            var gated = false;
+            for (var j = i; j >= 0; j--)
+            {
+                if (Regex.IsMatch(lines[j], @"\bForbidden\s*\(\s*req\b")) { gated = true; break; }
+                if (Regex.IsMatch(lines[j], @"app\.Map(Get|Post|Put|Delete|Patch)\s*\(")) break;
+            }
+            if (!gated) offenders.Add($"Program.cs:{i + 1}: {lines[i].Trim()}");
+        }
+
+        Assert.NotEmpty(
+            lines.Where((l, i) => Regex.IsMatch(l, @"\bActorRole\s*\(\s*req\b")).ToList());
+        Assert.True(offenders.Count == 0,
+            "ActorRole returns Owner for the admin token WITHOUT recording, which is only "
+            + "safe because the caller already passed Forbidden on the same request. These "
+            + "call sites have no such gate, so the token reaches Owner unrecorded:\n  "
             + string.Join("\n  ", offenders));
     }
 

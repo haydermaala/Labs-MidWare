@@ -24,9 +24,12 @@ public sealed class PlatformAdminService
         _clock = clock;
     }
 
-    public enum GrantOutcome { Ok, UnknownRole }
+    public enum GrantOutcome { Ok, UnknownRole, SodViolation }
 
-    public sealed record GrantResult(GrantOutcome Outcome, PlatformRoleAssignmentView? Assignment);
+    public sealed record GrantResult(
+        GrantOutcome Outcome,
+        PlatformRoleAssignmentView? Assignment,
+        IReadOnlyCollection<string>? ViolatedRules = null);
 
     /// <summary>Assign a platform role to a user. <paramref name="reason"/> should be
     /// present for break-glass (Root Owner) grants. Fails if the role is unknown.</summary>
@@ -38,6 +41,20 @@ public sealed class PlatformAdminService
         {
             return new GrantResult(GrantOutcome.UnknownRole, null);
         }
+
+        // Static separation of duty. Without this the platform had only the dynamic half:
+        // PlatformSupportService refuses self-approval, but one human granted both
+        // support-engineer and security-admin could request under one hat and approve
+        // under the other, and every audit row would look correct because two genuinely
+        // distinct role assignments were involved. The grant path is the only place a
+        // platform role is conferred, so it is the only place this has to hold.
+        var violations = PlatformSeparationOfDuty.WouldNewlyViolate(RolesFor(targetUserId), role);
+        if (violations.Count > 0)
+        {
+            return new GrantResult(GrantOutcome.SodViolation, null,
+                violations.Select(r => r.Name).ToList());
+        }
+
         using var db = _factory.CreateDbContext();
         var entity = new PlatformRoleAssignmentEntity
         {
