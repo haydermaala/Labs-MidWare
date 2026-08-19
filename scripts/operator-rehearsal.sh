@@ -74,20 +74,46 @@ if [ -z "${LC_SESSION:-}" ]; then
   exit 2
 fi
 
-# Reject the placeholder before touching the network. It is copied from documentation
-# more often than anyone would like, and the resulting uniform 401s look exactly like a
-# real finding.
-case "$LC_SESSION" in
-  "ses_…"|"ses_..."|"ses_"|"<session>"|"YOUR_SESSION")
-    echo "✗ LC_SESSION is still the placeholder from the docs, not a real token." >&2
-    echo "  Get the real one: DevTools > Application > Cookies > lc_session > Value." >&2
-    echo "  (document.cookie cannot read it — the cookie is HttpOnly.)" >&2
-    exit 2 ;;
-esac
-if [ "${LC_SESSION#ses_}" = "$LC_SESSION" ]; then
-  echo "✗ LC_SESSION does not start with 'ses_', so it is not a session token." >&2
-  echo "  If you pasted the admin token: that is the credential this rehearsal exists to" >&2
-  echo "  prove unnecessary, and using it here would prove the opposite." >&2
+# Validate the SHAPE of the session token before touching the network.
+#
+# A session token is exactly "ses_" + 64 lowercase hex characters (AuthService issues
+# "ses_" + Ids.NewSecret(), which is 32 random bytes hex-encoded). Checking that catches
+# every way this goes wrong in practice — the documentation placeholder copied verbatim,
+# a value truncated or line-wrapped by the terminal, an unexpanded shell variable, or the
+# admin token pasted by mistake — and it catches them here, with an explanation, instead
+# of as a wall of 401s that reads like a finding about the token.
+if ! printf '%s' "$LC_SESSION" | grep -Eq '^ses_[0-9a-f]{64}$'; then
+  {
+    echo "✗ LC_SESSION is not a session token — NOTHING WAS TESTED."
+    echo
+    echo "  Expected exactly: ses_ followed by 64 hex characters (68 in total)."
+    echo "  Got: ${#LC_SESSION} characters starting \"$(printf '%.8s' "$LC_SESSION")...\""
+    echo
+    case "$LC_SESSION" in
+      ses_…*|ses_...*|"ses_"|"<session>"|*PASTE*|*paste*|*YOUR*|*your-session*)
+        echo "  That looks like the placeholder from the docs, copied verbatim." ;;
+      ses_*)
+        echo "  Right prefix, wrong length — the value was probably truncated or wrapped" ;;
+      "")
+        echo "  It is empty. If you ran the export as a separate command, note that shell" ;;
+      *)
+        echo "  No ses_ prefix. If this is the admin token: that is the credential this" ;;
+    esac
+    case "$LC_SESSION" in
+      "") echo "  variables do not survive between separate shell invocations — set it on" ;;
+    esac
+    case "$LC_SESSION" in
+      "") echo "  the same line as the script, or export it in the shell you run from." ;;
+    esac
+    case "$LC_SESSION" in
+      ses_*|"") : ;;
+      *) echo "  rehearsal exists to prove unnecessary; using it here proves the opposite." ;;
+    esac
+    echo
+    echo "  Get the real value: sign in as Root Owner (MFA), then"
+    echo "  DevTools > Application > Cookies > lc_session > Value."
+    echo "  document.cookie cannot read it — the cookie is HttpOnly."
+  } >&2
   exit 2
 fi
 
