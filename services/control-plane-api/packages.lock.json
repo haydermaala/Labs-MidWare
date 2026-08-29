@@ -69,9 +69,9 @@
       },
       "Stripe.net": {
         "type": "Direct",
-        "requested": "[52.1.1, )",
-        "resolved": "52.1.1",
-        "contentHash": "YR8RgHl5WEHbcNJUTv37PQzVPqt1I8i+2sepl+/aRDChqGh2EQwavbbAuytTu1hj+u42GLzUksbBlukTeONwUA==",
+        "requested": "[52.4.0, )",
+        "resolved": "52.4.0",
+        "contentHash": "EIsOiIzQBTPNvCb7mvpEVor+rn0z9bcL+D43buAqF2c2aYx3PEyDdjX/XwDWYGq6PTc8r6NVCcRoOs3hrzfcAg==",
         "dependencies": {
           "Newtonsoft.Json": "13.0.3",
           "System.Configuration.ConfigurationManager": "9.0.0"
