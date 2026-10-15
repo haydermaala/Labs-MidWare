@@ -90,7 +90,7 @@ jobs:
         with:
           workspaces: apps/gateway-desktop/src-tauri
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v4
         with:
           node-version: 20
